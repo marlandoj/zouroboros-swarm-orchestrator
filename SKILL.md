@@ -311,10 +311,10 @@ ps aux | grep -c "zo/ask"
 
 | File | Purpose | Version |
 | --- | --- | --- |
-|  | Original v1 orchestrator | v1 |
-|  | Resilient v2 orchestrator | v2 (recommended) |
-|  | Inter-agent communication | v1 |
-|  | Example task definitions | v2 |
+| `scripts/orchestrate.ts` | Original v1 orchestrator | v1 |
+| `scripts/orchestrate-v2.ts` | Resilient v2 orchestrator | v2 (recommended) |
+| `scripts/orchestrate-with-comms.ts` | Inter-agent communication | v1 |
+| `examples/sample-tasks.json` | Example task definitions | v2 |
 | `scripts/swarm` | CLI wrapper | v2 |
 | `scripts/swarm-memory.ts` | Persistent memory module | v3 |
 | `scripts/orchestrate-v3.ts` | Memory-aware orchestrator | v3 |
