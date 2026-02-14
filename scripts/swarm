@@ -1,0 +1,38 @@
+#!/bin/bash
+# Swarm Orchestrator CLI Wrapper
+
+set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+V2_SCRIPT="$SCRIPT_DIR/orchestrate-v2.ts"
+
+show_help() {
+    cat << 'EOF'
+Swarm Orchestrator v2 - Resilient Multi-Agent Execution
+
+USAGE:
+    swarm run <tasks.json> [output-dir]     Execute swarm with task file
+    swarm quick "<query>" --personas "p1,p2" Quick single-query swarm
+    swarm validate <tasks.json>              Validate task file format
+    swarm template [name]                    Generate task template
+
+EXAMPLES:
+    swarm run examples/sample-tasks.json
+    swarm quick "Security audit" --personas "security-engineer,devops"
+
+EOF
+}
+
+case "${1:-help}" in
+    run)
+        shift
+        bun "$V2_SCRIPT" "$@"
+        ;;
+    help|--help|-h)
+        show_help
+        ;;
+    *)
+        echo "Unknown command: $1"
+        show_help
+        exit 1
+        ;;
+esac

@@ -1,0 +1,30 @@
+[
+  {
+    "id": "follow-up-research",
+    "persona": "research-analyst",
+    "task": "Review the previous AI market research and identify any new developments since the initial analysis. Focus on: 1) Any major announcements from the companies we identified, 2) Competitive landscape changes, 3) Updated analyst ratings. Append your findings to the existing research context.",
+    "priority": "high",
+    "contextAccess": "append",
+    "contextTags": ["market-research", "ai"],
+    "outputToMemory": true,
+    "memoryMetadata": {
+      "category": "market-research",
+      "priority": "high",
+      "tags": ["ai", "follow-up", "updates"]
+    }
+  },
+  {
+    "id": "updated-valuation",
+    "persona": "financial-advisor",
+    "task": "Re-evaluate the previously recommended AI investment opportunities based on the updated research. Provide: 1) Updated price targets, 2) Any changes to position sizing recommendations, 3) New opportunities that emerged, 4) Any positions to exit. Reference both original and follow-up research.",
+    "priority": "critical",
+    "contextAccess": "read",
+    "contextTags": ["market-research", "investment-opportunities"],
+    "outputToMemory": true,
+    "memoryMetadata": {
+      "category": "updated-recommendations",
+      "priority": "critical",
+      "tags": ["ai", "updates", "rebalancing"]
+    }
+  }
+]

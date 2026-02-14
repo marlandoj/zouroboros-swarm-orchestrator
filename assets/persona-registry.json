@@ -1,0 +1,53 @@
+{
+  "personas": [
+    {
+      "id": "financial-advisor",
+      "name": "Financial Advisor",
+      "expertise": ["investment analysis", "portfolio management", "trading", "financial planning"],
+      "best_for": ["stock analysis", "financial planning", "market data", "investment decisions"],
+      "mcp_servers": ["alphavantage", "alpaca", "fred", "yahoo-finance"]
+    },
+    {
+      "id": "research-analyst",
+      "name": "Research Analyst",
+      "expertise": ["data gathering", "synthesis", "trend analysis", "market research"],
+      "best_for": ["market research", "competitive analysis", "industry trends", "company research"]
+    },
+    {
+      "id": "risk-analyst",
+      "name": "Risk Analyst",
+      "expertise": ["risk assessment", "downside analysis", "compliance", "scenario planning"],
+      "best_for": ["risk evaluation", "mitigation strategies", "stress testing", "compliance review"]
+    },
+    {
+      "id": "technical-analyst",
+      "name": "Technical Analyst",
+      "expertise": ["chart patterns", "technical indicators", "price action", "market timing"],
+      "best_for": ["entry/exit points", "trend identification", "support/resistance", "momentum analysis"]
+    },
+    {
+      "id": "news-monitor",
+      "name": "News Monitor",
+      "expertise": ["news analysis", "sentiment tracking", "event detection", "headline filtering"],
+      "best_for": ["breaking news", "earnings reports", "market-moving events", "sentiment shifts"]
+    },
+    {
+      "id": "tax-advisor",
+      "name": "Tax Advisor",
+      "expertise": ["tax optimization", "tax-loss harvesting", "capital gains", "tax implications"],
+      "best_for": ["tax planning", "harvesting opportunities", "account type selection", "tax-efficient investing"]
+    },
+    {
+      "id": "macro-economist",
+      "name": "Macro Economist",
+      "expertise": ["economic indicators", "Fed policy", "interest rates", "inflation analysis"],
+      "best_for": ["interest rate outlook", "recession analysis", "economic cycle positioning", "policy impact"]
+    },
+    {
+      "id": "esg-analyst",
+      "name": "ESG Analyst",
+      "expertise": ["ESG ratings", "sustainability metrics", "impact investing", "corporate governance"],
+      "best_for": ["ESG screening", "sustainable investing", "impact assessment", "governance review"]
+    }
+  ]
+}

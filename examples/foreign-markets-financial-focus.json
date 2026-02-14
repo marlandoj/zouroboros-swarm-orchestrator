@@ -1,0 +1,26 @@
+[
+  {
+    "id": "japan-market-analysis",
+    "persona": "financial-advisor",
+    "task": "Analyze Japan as a 2026 investment destination. Use your market data tools to provide: 1) Current NIKKEI 225 level and YTD performance, 2) USD/JPY exchange rate trend, 3) Bank of Japan interest rate policy outlook, 4) Top 3 Japan ETFs with expense ratios (EWJ, HEWJ, DXJ), 5) GDP growth forecast for 2026. Present data in a clear table format with investment recommendation (Buy/Neutral/Avoid). Keep under 600 words.",
+    "priority": "critical"
+  },
+  {
+    "id": "india-market-analysis",
+    "persona": "financial-advisor",
+    "task": "Analyze India as a 2026 investment destination. Use your market data tools to provide: 1) Current NIFTY 50/SENSEX levels and YTD performance, 2) USD/INR exchange rate trend, 3) RBI interest rate policy outlook, 4) Top 3 India ETFs with expense ratios (INDA, SMIN, PIN), 5) GDP growth forecast for 2026. Present data in a clear table format with investment recommendation (Buy/Neutral/Avoid). Keep under 600 words.",
+    "priority": "critical"
+  },
+  {
+    "id": "europe-market-analysis",
+    "persona": "financial-advisor",
+    "task": "Analyze European markets (Germany/DAX, UK/FTSE) as 2026 investment destinations. Use your market data tools to provide: 1) Current DAX and FTSE 100 levels with YTD performance, 2) EUR/USD and GBP/USD trends, 3) ECB/BoE interest rate outlook, 4) Top 3 Europe ETFs with expense ratios (VGK, HEDJ, EZU), 5) GDP growth forecasts for 2026. Present data in clear table format with investment recommendation (Buy/Neutral/Avoid). Keep under 600 words.",
+    "priority": "high"
+  },
+  {
+    "id": "emerging-markets-analysis",
+    "persona": "financial-advisor",
+    "task": "Analyze broader emerging markets (Vietnam, Indonesia, Brazil, Mexico) for 2026. Use your market data tools to provide: 1) MSCI Emerging Markets index performance YTD, 2) Currency stability overview (VND, IDR, BRL, MXN vs USD), 3) Top 3 broad emerging market ETFs (VWO, IEMG, SCHE) with expense ratios, 4) Single-country ETF options if available. Present data with investment recommendation and risk warnings. Keep under 600 words.",
+    "priority": "high"
+  }
+]

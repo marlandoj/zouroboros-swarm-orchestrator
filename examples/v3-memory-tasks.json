@@ -1,0 +1,56 @@
+[
+  {
+    "id": "research-phase-1",
+    "persona": "research-analyst",
+    "task": "Conduct initial research on AI market trends in Q1 2026. Focus on: 1) Major funding rounds, 2) New product launches, 3) Regulatory developments. Provide a structured summary with key findings.",
+    "priority": "critical",
+    "contextAccess": "none",
+    "outputToMemory": true,
+    "memoryMetadata": {
+      "category": "market-research",
+      "priority": "critical",
+      "tags": ["ai", "q1-2026", "initial-research"]
+    }
+  },
+  {
+    "id": "financial-analysis",
+    "persona": "financial-advisor",
+    "task": "Based on the market research conducted by the research analyst, identify 3-5 investment opportunities in the AI sector. For each opportunity, provide: ticker symbol, investment thesis, risk rating (1-5), and recommended position size for a $100K portfolio.",
+    "priority": "high",
+    "contextAccess": "read",
+    "contextTags": ["market-research", "ai"],
+    "outputToMemory": true,
+    "memoryMetadata": {
+      "category": "investment-opportunities",
+      "priority": "high",
+      "tags": ["ai", "investments", "financial-analysis"]
+    }
+  },
+  {
+    "id": "risk-assessment",
+    "persona": "risk-analyst",
+    "task": "Review the identified investment opportunities and conduct a comprehensive risk assessment. Consider: market volatility, sector concentration risk, regulatory risks, and liquidity concerns. Provide specific stop-loss recommendations for each position.",
+    "priority": "high",
+    "contextAccess": "read",
+    "contextTags": ["investment-opportunities"],
+    "outputToMemory": true,
+    "memoryMetadata": {
+      "category": "risk-analysis",
+      "priority": "high",
+      "tags": ["risk", "ai", "stop-loss"]
+    }
+  },
+  {
+    "id": "final-synthesis",
+    "persona": "portfolio-manager",
+    "task": "Synthesize all previous analyses into a final investment recommendation report. Include: 1) Executive summary, 2) Recommended portfolio allocation across the AI opportunities, 3) Risk-adjusted expected returns, 4) Implementation timeline, 5) Key monitoring metrics. Reference all prior analyses.",
+    "priority": "critical",
+    "contextAccess": "read",
+    "outputToMemory": true,
+    "memoryMetadata": {
+      "category": "final-recommendation",
+      "priority": "critical",
+      "tags": ["synthesis", "portfolio", "final-report"]
+    }
+  }
+]
