@@ -1,4 +1,4 @@
-# swarm-orchestrator
+# zo-swarm-orchestrator
 
 To install dependencies:
 

@@ -179,7 +179,7 @@ $ bun swarm-memory.ts list-contexts demo-ai-analysis-2026
 
 ### Basic v3 Execution
 ```bash
-cd Skills/swarm-orchestrator/scripts
+cd Skills/zo-swarm-orchestrator/scripts
 
 # Run with persistent memory
 bun orchestrate-v3.ts examples/v3-memory-tasks.json \

@@ -73,7 +73,7 @@ function logVerbose(message: string, config: SwarmConfig) {
 
 // Load persona registry
 async function loadPersonaRegistry(): Promise<PersonaDefinition[]> {
-  const registryPath = "/home/workspace/Skills/swarm-orchestrator/assets/persona-registry.json";
+  const registryPath = "/home/workspace/Skills/zo-swarm-orchestrator/assets/persona-registry.json";
   
   if (!existsSync(registryPath)) {
     // Create default registry
@@ -100,7 +100,7 @@ async function loadPersonaRegistry(): Promise<PersonaDefinition[]> {
       ]
     };
     
-    await mkdir("/home/workspace/Skills/swarm-orchestrator/assets", { recursive: true });
+    await mkdir("/home/workspace/Skills/zo-swarm-orchestrator/assets", { recursive: true });
     await writeFile(registryPath, JSON.stringify(defaultRegistry, null, 2));
     return defaultRegistry.personas;
   }

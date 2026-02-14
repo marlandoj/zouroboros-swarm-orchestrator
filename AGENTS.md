@@ -162,6 +162,6 @@ Always structure tasks by priority:
 ## References
 
 - Failure Analysis: `file /home/.z/workspaces/con_S8zYiOhjCgjFbcpi/swarm-analysis/SWARM_FAILURE_ANALYSIS.md`
-- v2 Implementation: `file /home/workspace/Skills/swarm-orchestrator/scripts/orchestrate-v2.ts`
-- Task Examples: `file /home/workspace/Skills/swarm-orchestrator/examples/sample-tasks.json`
-- Full Documentation: `file /home/workspace/Skills/swarm-orchestrator/SKILL.md`
+- v2 Implementation: `file /home/workspace/Skills/zo-swarm-orchestrator/scripts/orchestrate-v2.ts`
+- Task Examples: `file /home/workspace/Skills/zo-swarm-orchestrator/examples/sample-tasks.json`
+- Full Documentation: `file /home/workspace/Skills/zo-swarm-orchestrator/SKILL.md`
