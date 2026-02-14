@@ -1,5 +1,5 @@
 ---
-name: swarm-orchestrator
+name: zo-swarm-orchestrator
 description: Spawn parallel agent teams, delegate tasks across multiple personas, and synthesize results. Enables any persona to utilize a multi-agent swarm for complex analysis, research, and decision-making tasks.
 compatibility: Created for Zo Computer
 metadata:
@@ -201,7 +201,7 @@ The second session automatically retrieves and builds upon findings from the fir
 ### Option 1: v2 Command Line (Recommended)
 
 ```bash
-cd Skills/swarm-orchestrator/scripts
+cd Skills/zo-swarm-orchestrator/scripts
 
 # Run with task file
 bun orchestrate-v2.ts examples/sample-tasks.json
@@ -213,7 +213,7 @@ bun orchestrate-v2.ts my-tasks.json ./results
 ### Option 2: v1 Command Line (Simple cases)
 
 ```bash
-cd Skills/swarm-orchestrator/scripts
+cd Skills/zo-swarm-orchestrator/scripts
 
 # Single-query swarm
 bun orchestrate.ts "Research AI investment opportunities" financial-advisor,research-analyst

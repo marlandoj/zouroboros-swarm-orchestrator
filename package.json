@@ -1,5 +1,5 @@
 {
-  "name": "swarm-orchestrator",
+  "name": "zo-swarm-orchestrator",
   "module": "index.ts",
   "type": "module",
   "private": true,
