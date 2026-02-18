@@ -1,0 +1,29 @@
+[
+  {
+    "id": "task1",
+    "persona": "frontend-developer",
+    "task": "Briefly analyze this page and list 3 key findings about its UI/UX design.",
+    "priority": "high",
+    "memoryStrategy": "hierarchical",
+    "outputToMemory": true,
+    "memoryMetadata": {
+      "category": "ui-analysis",
+      "priority": "high",
+      "tags": ["ui", "ux", "design"]
+    }
+  },
+  {
+    "id": "task2",
+    "persona": "backend-architect",
+    "task": "Review the backend architecture considerations for this application and identify 3 key improvements.",
+    "priority": "high",
+    "memoryStrategy": "hierarchical",
+    "contextAccess": "read",
+    "outputToMemory": true,
+    "memoryMetadata": {
+      "category": "backend-review",
+      "priority": "high",
+      "tags": ["backend", "architecture"]
+    }
+  }
+]
