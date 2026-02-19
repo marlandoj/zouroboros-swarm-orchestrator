@@ -16,6 +16,9 @@
 
 import { SwarmMemory, getSwarmMemory, ContextAccessMode, MemoryQuery } from "./swarm-memory";
 import { HierarchicalMemory, SlidingWindowMemory, MemoryItem, MemoryStrategy } from "./token-optimizer";
+import { setInterval, clearInterval } from "timers";
+import { join } from "path";
+import { existsSync, readFileSync } from "fs";
 
 // ============================================================================
 // TYPES
@@ -87,6 +90,65 @@ const DEFAULT_CONFIG: OrchestratorConfig = {
   },
   maxContextTokens: 8000,
 };
+
+// ============================================================================
+// CONFIGURATION LOADING
+// ============================================================================
+
+interface RuntimeConfig {
+  maxConcurrency: number;
+  timeoutSeconds: number;
+  maxRetries: number;
+  memory: {
+    enable: boolean;
+    workingMemorySize: number;
+    longTermMemorySize: number;
+    enableDeduplication: boolean;
+    enableHTMLStripping: boolean;
+    maxTokens: number;
+  };
+}
+
+function loadConfig(): RuntimeConfig {
+  const defaults = {
+    maxConcurrency: parseInt(process.env.SWARM_MAX_CONCURRENCY || "2"),
+    timeoutSeconds: parseInt(process.env.SWARM_TIMEOUT_SECONDS || "300"),
+    maxRetries: parseInt(process.env.SWARM_MAX_RETRIES || "3"),
+    memory: {
+      enable: true,
+      workingMemorySize: 2,
+      longTermMemorySize: 3,
+      enableDeduplication: true,
+      enableHTMLStripping: true,
+      maxTokens: 8000,
+    },
+  };
+
+  // Try to load config.json from skill root (parent of scripts/)
+  try {
+    const configPath = join(__dirname, "..", "config.json");
+    if (existsSync(configPath)) {
+      const fileConfig = JSON.parse(readFileSync(configPath, "utf-8"));
+      return {
+        maxConcurrency: fileConfig.maxConcurrency ?? defaults.maxConcurrency,
+        timeoutSeconds: fileConfig.timeoutSeconds ?? defaults.timeoutSeconds,
+        maxRetries: fileConfig.maxRetries ?? defaults.maxRetries,
+        memory: {
+          enable: fileConfig.memory?.enable ?? defaults.memory.enable,
+          workingMemorySize: fileConfig.memory?.workingMemorySize ?? defaults.memory.workingMemorySize,
+          longTermMemorySize: fileConfig.memory?.longTermMemorySize ?? defaults.memory.longTermMemorySize,
+          enableDeduplication: fileConfig.memory?.enableDeduplication ?? defaults.memory.enableDeduplication,
+          enableHTMLStripping: fileConfig.memory?.enableHTMLStripping ?? defaults.memory.enableHTMLStripping,
+          maxTokens: fileConfig.memory?.maxTokens ?? defaults.memory.maxTokens,
+        },
+      };
+    }
+  } catch (error) {
+    // Config file doesn't exist or is invalid, use defaults
+  }
+
+  return defaults;
+}
 
 // ============================================================================
 // MEMORY INTEGRATION MODULE
@@ -541,6 +603,7 @@ async function main() {
     console.log("  --strategy <type>     Memory strategy: hierarchical|sliding|none (default: hierarchical)");
     console.log("  --max-tokens <n>      Max context tokens (default: 8000)");
     console.log("  --concurrency <n>     Max concurrent tasks (default: 2)");
+    console.log("  --timeout <seconds>   Task timeout in seconds (default: 300)");
     console.log("\nExample:");
     console.log("  bun orchestrate-v4.ts tasks.json --strategy hierarchical --max-tokens 12000");
     process.exit(1);
@@ -554,6 +617,7 @@ async function main() {
   let strategy: MemoryStrategy = DEFAULT_CONFIG.defaultMemoryStrategy;
   let maxTokens = DEFAULT_CONFIG.maxContextTokens;
   let concurrency = DEFAULT_CONFIG.maxConcurrency;
+  let timeoutSeconds = DEFAULT_CONFIG.timeoutSeconds;
 
   for (let i = 1; i < args.length; i++) {
     switch (args[i]) {
@@ -578,6 +642,9 @@ async function main() {
       case "--concurrency":
         concurrency = parseInt(args[++i]);
         break;
+      case "--timeout":
+        timeoutSeconds = parseInt(args[++i]);
+        break;
     }
   }
 
@@ -600,6 +667,7 @@ async function main() {
     defaultMemoryStrategy: strategy,
     maxContextTokens: maxTokens,
     maxConcurrency: concurrency,
+    timeoutSeconds,
   });
 
   try {

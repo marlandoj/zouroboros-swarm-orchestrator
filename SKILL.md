@@ -219,12 +219,47 @@ Add memory fields if using context sharing (optional).
 
 ## Configuration
 
+You can configure the orchestrator using **either** a config file **or** environment variables.
+
+### Option 1: Config File (Recommended)
+
+Create `config.json` in the skill root:
+
+```json
+{
+  "maxConcurrency": 20,
+  "timeoutSeconds": 605,
+  "maxRetries": 3,
+  "memory": {
+    "enable": true,
+    "workingMemorySize": 2,
+    "longTermMemorySize": 3,
+    "enableDeduplication": true,
+    "enableHTMLStripping": true,
+    "maxTokens": 8000
+  }
+}
+```
+
+**Priority:** CLI flags > Config file > Environment variables > Defaults
+
+### Option 2: Environment Variables
+
+Set in [Settings > Advanced](/?t=settings&s=advanced) as Secrets:
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `SWARM_MAX_CONCURRENCY` | Max parallel agents | 2 |
 | `SWARM_TIMEOUT_SECONDS` | Timeout per agent | 300 |
 | `SWARM_MAX_RETRIES` | Retry attempts | 3 |
 | `ZO_CLIENT_IDENTITY_TOKEN` | Required API auth | - |
+
+### Configuration Precedence
+
+1. **CLI flags** (highest priority) - e.g., `--concurrency 10`
+2. **Config file** (`config.json`)
+3. **Environment variables** (Zo Secrets)
+4. **Built-in defaults** (lowest priority)
 
 ---
 

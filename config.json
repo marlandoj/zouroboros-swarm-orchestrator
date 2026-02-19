@@ -1,0 +1,13 @@
+{
+  "maxConcurrency": 20,
+  "timeoutSeconds": 605,
+  "maxRetries": 3,
+  "memory": {
+    "enable": true,
+    "workingMemorySize": 2,
+    "longTermMemorySize": 3,
+    "enableDeduplication": true,
+    "enableHTMLStripping": true,
+    "maxTokens": 8000
+  }
+}
