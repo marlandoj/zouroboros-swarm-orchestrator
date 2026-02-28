@@ -7,7 +7,7 @@
 
 # zo-swarm-orchestrator
 
-**Multi-agent orchestration engine for [Zo Computer](https://zo.computer](https://zo.computer?referrer=faunaflora)) — spawn parallel agent teams with token-optimized memory, DAG task dependencies, and resilient execution.**
+**Multi-agent orchestration engine for [Zo Computer](https://zo.computer?referrer=faunaflora) — spawn parallel agent teams with token-optimized memory, DAG task dependencies, and resilient execution.**
 
 Turn a single prompt into a coordinated swarm of specialized AI agents that plan, execute, and synthesize work in parallel — with automatic memory management, circuit breakers, and structured observability.
 
