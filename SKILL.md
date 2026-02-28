@@ -5,12 +5,14 @@ compatibility: Created for Zo Computer
 metadata:
   author: marlandoj.zo.computer
   created: 2026-02-08
-  updated: 2026-02-18
-  version: 4.0.0
+  updated: 2026-02-27
+  version: 4.1.0
 ---
-# Swarm Orchestrator Skill v4.0.0
+# Swarm Orchestrator Skill v4.1.0
 
 A reusable skill that enables **any persona** to spawn parallel agent teams, delegate tasks across specialized personas, and synthesize results into coherent output.
+
+**v4.1 Updates:** DAG task dependencies, NDJSON structured logging, result persistence, persona validation, doctor command, inter-agent messaging, config.json integration, observability dashboard
 
 ---
 
@@ -27,6 +29,9 @@ bun orchestrate-v4.ts tasks.json --strategy none
 
 # Bounded context: sliding window
 bun orchestrate-v4.ts tasks.json --strategy sliding --max-tokens 8000
+
+# Health check
+bun orchestrate-v4.ts doctor
 ```
 
 ---

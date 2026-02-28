@@ -1,7 +1,8 @@
 {
-  "maxConcurrency": 20,
+  "maxConcurrency": 3,
   "timeoutSeconds": 605,
   "maxRetries": 3,
+  "crossTaskContextWindow": 3,
   "memory": {
     "enable": true,
     "workingMemorySize": 2,

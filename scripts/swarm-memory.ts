@@ -118,11 +118,27 @@ function initializeDatabase(db: Database): void {
     )
   `);
 
+  // Inter-agent messaging table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      swarm_id TEXT NOT NULL,
+      from_agent TEXT NOT NULL,
+      to_agent TEXT NOT NULL,
+      message TEXT NOT NULL,
+      message_type TEXT DEFAULT 'info',
+      read INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL
+    )
+  `);
+
   // Create indexes for performance
   db.exec(`CREATE INDEX IF NOT EXISTS idx_contexts_swarm ON swarm_contexts(swarm_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_contexts_created ON swarm_contexts(created_at)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_status ON swarm_sessions(status)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_session_contexts_swarm ON session_contexts(swarm_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_to ON agent_messages(to_agent, read)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_swarm ON agent_messages(swarm_id)`);
 }
 
 // ============================================================================
@@ -489,6 +505,137 @@ Use this context to inform your analysis, but focus on your specific task.
       sessions: sessionCount.count,
       dbPath: this.dbPath,
     };
+  }
+
+  // --------------------------------------------------------------------------
+  // CROSS-DATABASE QUERY (Persona Memory Bridge)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Query the persona memory database (shared-facts.db) for relevant context.
+   * Bridges swarm orchestration with persona long-term memory.
+   */
+  queryPersonaMemory(
+    query: string,
+    options: { persona?: string; limit?: number } = {}
+  ): Array<{ entity: string; key: string | null; value: string; category: string; decayClass: string }> {
+    const personaDbPath = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
+    if (!existsSync(personaDbPath)) return [];
+
+    let personaDb: Database | null = null;
+    try {
+      personaDb = new Database(personaDbPath, { readonly: true });
+      personaDb.exec("PRAGMA busy_timeout = 3000");
+      const nowSec = Math.floor(Date.now() / 1000);
+      const { persona, limit = 5 } = options;
+
+      // FTS search against persona facts
+      const safeQuery = query
+        .replace(/['"]/g, "")
+        .split(/\s+/)
+        .filter((w: string) => w.length > 1)
+        .map((w: string) => `"${w}"`)
+        .join(" OR ");
+
+      if (!safeQuery) return [];
+
+      const rows = personaDb.prepare(`
+        SELECT f.entity, f.key, f.value, f.category, f.decay_class
+        FROM facts f
+        JOIN facts_fts fts ON f.rowid = fts.rowid
+        WHERE facts_fts MATCH ?
+          AND (f.expires_at IS NULL OR f.expires_at > ?)
+          ${persona ? "AND f.persona = ?" : ""}
+        ORDER BY rank
+        LIMIT ?
+      `).all(...[safeQuery, nowSec, ...(persona ? [persona] : []), limit]) as any[];
+
+      return rows.map((r: any) => ({
+        entity: r.entity,
+        key: r.key,
+        value: r.value,
+        category: r.category,
+        decayClass: r.decay_class,
+      }));
+    } catch {
+      return [];
+    } finally {
+      personaDb?.close();
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // INTER-AGENT MESSAGING
+  // --------------------------------------------------------------------------
+
+  /**
+   * Send a message from one agent to another within a swarm
+   */
+  sendMessage(
+    swarmId: string,
+    fromAgent: string,
+    toAgent: string,
+    message: string,
+    messageType: "info" | "request" | "result" | "error" = "info"
+  ): void {
+    this.db.prepare(`
+      INSERT INTO agent_messages (swarm_id, from_agent, to_agent, message, message_type, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(swarmId, fromAgent, toAgent, message, messageType, new Date().toISOString());
+  }
+
+  /**
+   * Read unread messages for an agent
+   */
+  readMessages(
+    toAgent: string,
+    options: { swarmId?: string; markRead?: boolean } = {}
+  ): Array<{ id: number; fromAgent: string; message: string; messageType: string; createdAt: string }> {
+    const { swarmId, markRead = true } = options;
+
+    let sql = `SELECT * FROM agent_messages WHERE to_agent = ? AND read = 0`;
+    const params: any[] = [toAgent];
+
+    if (swarmId) {
+      sql += ` AND swarm_id = ?`;
+      params.push(swarmId);
+    }
+
+    sql += ` ORDER BY created_at ASC`;
+
+    const rows = this.db.prepare(sql).all(...params) as any[];
+
+    if (markRead && rows.length > 0) {
+      const ids = rows.map((r: any) => r.id);
+      this.db.prepare(`UPDATE agent_messages SET read = 1 WHERE id IN (${ids.map(() => "?").join(",")})`)
+        .run(...ids);
+    }
+
+    return rows.map((r: any) => ({
+      id: r.id,
+      fromAgent: r.from_agent,
+      message: r.message,
+      messageType: r.message_type,
+      createdAt: r.created_at,
+    }));
+  }
+
+  /**
+   * Get message statistics for a swarm
+   */
+  getMessageStats(swarmId: string): { total: number; unread: number; byAgent: Record<string, number> } {
+    const total = (this.db.prepare("SELECT COUNT(*) as cnt FROM agent_messages WHERE swarm_id = ?").get(swarmId) as any).cnt;
+    const unread = (this.db.prepare("SELECT COUNT(*) as cnt FROM agent_messages WHERE swarm_id = ? AND read = 0").get(swarmId) as any).cnt;
+    const byAgent = this.db.prepare(`
+      SELECT to_agent, COUNT(*) as cnt FROM agent_messages WHERE swarm_id = ? GROUP BY to_agent
+    `).all(swarmId) as any[];
+
+    const agentCounts: Record<string, number> = {};
+    for (const row of byAgent) {
+      agentCounts[row.to_agent] = row.cnt;
+    }
+
+    return { total, unread, byAgent: agentCounts };
   }
 
   /**
