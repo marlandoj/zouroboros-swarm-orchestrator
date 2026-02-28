@@ -1,8 +1,7 @@
 #!/usr/bin/env bun
 /**
- * FFB Performance Test — Measures skill-enhanced vs baseline swarm execution
+ * Performance Test — Measures skill-enhanced vs baseline swarm execution
  *
- * Test Subject: Fauna & Flora Botanicals Website Review
  * Compares: Memory-enabled orchestration vs stateless orchestration
  *
  * Metrics captured:
@@ -10,12 +9,15 @@
  *   - Execution time per task and total
  *   - Memory retrieval latency and hit rate
  *   - Context quality score (relevance of cross-task references)
- *   - Result consistency (repeated finding deduplication rate)
  *   - Cost projection (tokens × model pricing)
+ *
+ * Usage:
+ *   bun performance-test.ts [--url <site-url>]
+ *   bun performance-test.ts --url https://example.com
  */
 
 import { join } from "path";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
 
 // ============================================================================
 // CONFIGURATION
@@ -23,7 +25,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 
 const ZO_API = "https://api.zo.computer/zo/ask";
 const ZO_TOKEN = process.env.ZO_CLIENT_IDENTITY_TOKEN || "";
-const SITE_URL = "https://faunaflorabotanicals.com";
+
+// Parse CLI args
+const args = process.argv.slice(2);
+const urlIdx = args.indexOf("--url");
+const TARGET_URL = urlIdx >= 0 && args[urlIdx + 1] ? args[urlIdx + 1] : "https://example.com";
+
 const OUTPUT_DIR = join(
   process.env.HOME || "/tmp",
   ".swarm",
@@ -32,40 +39,40 @@ const OUTPUT_DIR = join(
 const MEMORY_SCRIPT = "/home/workspace/.zo/memory/scripts/memory.ts";
 const MEMORY_DB = "/home/workspace/.zo/memory/shared-facts.db";
 
-// Specialist roster (mirrors the FFB scheduled swarm runner — concise prompts for test speed)
+// Specialist roster — concise prompts for test speed
 const SPECIALISTS = [
   {
     id: "perf-ux-architect",
-    persona: "ArchitectUX",
-    task: `Review ${SITE_URL} UX. Rate 1-10. List top 3 P0/P1/P2 findings for navigation, information architecture, and user flow. Be concise, under 400 words.`,
+    persona: "frontend-developer",
+    task: `Review ${TARGET_URL} UX. Rate 1-10. List top 3 P0/P1/P2 findings for navigation, information architecture, and user flow. Be concise, under 400 words.`,
     priority: "high" as const,
     category: "ux",
   },
   {
     id: "perf-seo-audit",
-    persona: "App Store Optimizer",
-    task: `Audit ${SITE_URL} SEO. Rate 1-10. Check meta tags, structured data, sitemap, robots.txt. List top 3 P0/P1/P2 findings. Be concise, under 400 words.`,
+    persona: "research-analyst",
+    task: `Audit ${TARGET_URL} SEO. Rate 1-10. Check meta tags, structured data, sitemap, robots.txt. List top 3 P0/P1/P2 findings. Be concise, under 400 words.`,
     priority: "high" as const,
     category: "seo",
   },
   {
     id: "perf-security-review",
-    persona: "Security Reviewer",
-    task: `Review ${SITE_URL} security. Rate 1-10. Check TLS, HTTP headers (CSP, HSTS), cookie flags. List top 3 P0/P1/P2 findings. Be concise, under 400 words.`,
+    persona: "security-engineer",
+    task: `Review ${TARGET_URL} security. Rate 1-10. Check TLS, HTTP headers (CSP, HSTS), cookie flags. List top 3 P0/P1/P2 findings. Be concise, under 400 words.`,
     priority: "critical" as const,
     category: "security",
   },
   {
     id: "perf-performance",
-    persona: "Performance Benchmarker",
-    task: `Audit ${SITE_URL} performance. Rate 1-10. Check bundle size, caching, render-blocking, CDN. List top 3 P0/P1/P2 findings. Be concise, under 400 words.`,
+    persona: "backend-architect",
+    task: `Audit ${TARGET_URL} performance. Rate 1-10. Check bundle size, caching, render-blocking, CDN. List top 3 P0/P1/P2 findings. Be concise, under 400 words.`,
     priority: "high" as const,
     category: "performance",
   },
   {
     id: "perf-synthesis",
-    persona: "project-manager-senior",
-    task: `Synthesize a website review for ${SITE_URL}. Give overall score, top 5 findings, and 3 quick wins. Be concise, under 500 words.`,
+    persona: "product-manager",
+    task: `Synthesize a website review for ${TARGET_URL}. Give overall score, top 5 findings, and 3 quick wins. Be concise, under 500 words.`,
     priority: "critical" as const,
     category: "synthesis",
   },
@@ -86,7 +93,6 @@ interface TaskMetrics {
   success: boolean;
   outputLength: number;
   error?: string;
-  // Memory-specific
   memoryContextTokens?: number;
   memoryRetrievalMs?: number;
   memoryHits?: number;
@@ -99,25 +105,21 @@ interface TestRunMetrics {
   completedAt: string;
   totalDurationMs: number;
   tasks: TaskMetrics[];
-  // Aggregates
   totalPromptTokens: number;
   totalOutputTokens: number;
   totalTokens: number;
   avgTaskDurationMs: number;
   successRate: number;
-  // Memory aggregates (enhanced only)
   totalMemoryRetrievalMs?: number;
   avgMemoryRetrievalMs?: number;
   totalMemoryHits?: number;
   memoryContextTokensSaved?: number;
-  // Quality
   totalOutputChars: number;
   avgOutputChars: number;
   findingsCount: number;
   p0Count: number;
   p1Count: number;
   p2Count: number;
-  // Cost
   estimatedCostUSD: number;
 }
 
@@ -138,11 +140,7 @@ function countFindings(
   return { total: p0 + p1 + p2, p0, p1, p2 };
 }
 
-// Claude Sonnet pricing (approximate)
-function estimateCost(
-  promptTokens: number,
-  outputTokens: number
-): number {
+function estimateCost(promptTokens: number, outputTokens: number): number {
   const inputCost = (promptTokens / 1_000_000) * 3.0;
   const outputCost = (outputTokens / 1_000_000) * 15.0;
   return inputCost + outputCost;
@@ -154,8 +152,6 @@ async function callZoAgent(
   timeoutMs = 300_000
 ): Promise<{ output: string; durationMs: number }> {
   const start = Date.now();
-
-  // Format matches the working FFB swarm runner: {"input": ..., "model_name": ...}
   const fullPrompt = `You are acting as the "${persona}" specialist.\n\n${prompt}`;
 
   const response = await fetch(ZO_API, {
@@ -164,9 +160,7 @@ async function callZoAgent(
       "content-type": "application/json",
       authorization: ZO_TOKEN,
     },
-    body: JSON.stringify({
-      input: fullPrompt,
-    }),
+    body: JSON.stringify({ input: fullPrompt }),
     signal: AbortSignal.timeout(timeoutMs),
   });
 
@@ -191,7 +185,7 @@ async function callZoAgent(
 
 async function queryMemory(
   query: string,
-  category?: string
+  _category?: string
 ): Promise<{
   results: Array<{ entity: string; key: string; value: string }>;
   durationMs: number;
@@ -251,24 +245,11 @@ async function storeMemoryFact(
   try {
     const proc = Bun.spawn(
       [
-        "bun",
-        MEMORY_SCRIPT,
-        "store",
-        "--entity",
-        entity,
-        "--key",
-        key,
-        "--value",
-        value,
-        "--category",
-        category,
-        "--decay",
-        "active",
+        "bun", MEMORY_SCRIPT,
+        "store", "--entity", entity, "--key", key,
+        "--value", value, "--category", category, "--decay", "active",
       ],
-      {
-        stdout: "pipe",
-        stderr: "pipe",
-      }
+      { stdout: "pipe", stderr: "pipe" }
     );
     await proc.exited;
   } catch {
@@ -293,9 +274,6 @@ async function runBaseline(): Promise<TestRunMetrics> {
 
   for (const spec of SPECIALISTS) {
     console.log(`  [${spec.id}] ${spec.persona}...`);
-    const taskStart = Date.now();
-
-    // Baseline: plain prompt, no memory context
     const prompt = spec.task;
     const promptTokens = estimateTokens(prompt);
 
@@ -337,23 +315,14 @@ async function runBaseline(): Promise<TestRunMetrics> {
       `    ${success ? "OK" : "FAIL"} | ${execMs}ms | ~${promptTokens}+${outputTokens} tokens | ${output.length} chars | ${findings.total} findings`
     );
 
-    // Rate limit protection
     await new Promise((r) => setTimeout(r, 1500));
   }
 
   const totalDuration = Date.now() - totalStart;
   const successfulTasks = tasks.filter((t) => t.success);
-  const allOutput = tasks.map((t) => t.outputLength).reduce((a, b) => a + b, 0);
+  const allOutput = tasks.reduce((s, t) => s + t.outputLength, 0);
   const totalPrompt = tasks.reduce((s, t) => s + t.promptTokensEstimated, 0);
   const totalOutput = tasks.reduce((s, t) => s + t.outputTokensEstimated, 0);
-  const allFindings = tasks.reduce((s, t) => {
-    // Re-count from output length approximation
-    return s;
-  }, 0);
-
-  // Count findings across all outputs (we need actual text for this)
-  let totalFindings = { total: 0, p0: 0, p1: 0, p2: 0 };
-  // We'll estimate from task metrics
 
   return {
     runId,
@@ -371,7 +340,7 @@ async function runBaseline(): Promise<TestRunMetrics> {
     successRate: successfulTasks.length / tasks.length,
     totalOutputChars: allOutput,
     avgOutputChars: allOutput / tasks.length,
-    findingsCount: 0, // Will be populated from output analysis
+    findingsCount: 0,
     p0Count: 0,
     p1Count: 0,
     p2Count: 0,
@@ -386,42 +355,17 @@ async function runEnhanced(): Promise<TestRunMetrics> {
   console.log("\n━━━ ENHANCED TEST (With Skills) ━━━");
   console.log(`Run ID: ${runId}`);
   console.log(`Specialists: ${SPECIALISTS.length}`);
-  console.log(
-    `Mode: Memory-enabled, context enrichment, cross-task knowledge\n`
-  );
+  console.log(`Mode: Memory-enabled, context enrichment, cross-task knowledge\n`);
 
   const totalStart = Date.now();
   let totalMemoryRetrievalMs = 0;
   let totalMemoryHits = 0;
   let totalMemoryContextTokens = 0;
 
-  // Pre-flight: store site context in memory for enrichment
   console.log("  [pre-flight] Seeding memory with site context...");
-  await storeMemoryFact(
-    "ffb-site",
-    "url",
-    SITE_URL,
-    "fact"
-  );
-  await storeMemoryFact(
-    "ffb-site",
-    "tech-stack",
-    "React 19.1.1 SPA, Vite build, Cloudflare Pages hosting, Tailwind CSS",
-    "fact"
-  );
-  await storeMemoryFact(
-    "ffb-site",
-    "previous-score",
-    "7.8/10 (B+) as of Feb 23, 2026. Previous score was 5.2/10. Key improvements: security headers, performance optimization.",
-    "fact"
-  );
-  await storeMemoryFact(
-    "ffb-site",
-    "known-issues",
-    "Analytics disabled (P0), missing JSON-LD structured data (P0), missing alt text on hero images (P0), zoom prevention accessibility issue",
-    "fact"
-  );
-  console.log("  [pre-flight] Memory seeded with 4 site context facts\n");
+  await storeMemoryFact("site-review", "url", TARGET_URL, "fact");
+  await storeMemoryFact("site-review", "test-type", "Multi-specialist website review", "fact");
+  console.log("  [pre-flight] Memory seeded with 2 site context facts\n");
 
   const previousResults: Array<{
     persona: string;
@@ -432,8 +376,7 @@ async function runEnhanced(): Promise<TestRunMetrics> {
   for (const spec of SPECIALISTS) {
     console.log(`  [${spec.id}] ${spec.persona}...`);
 
-    // Step 1: Query memory for relevant context
-    const memQuery = `fauna flora botanicals ${spec.category} website review`;
+    const memQuery = `${TARGET_URL} ${spec.category} website review`;
     const memResult = await queryMemory(memQuery, spec.category);
     totalMemoryRetrievalMs += memResult.durationMs;
     totalMemoryHits += memResult.results.length;
@@ -442,26 +385,18 @@ async function runEnhanced(): Promise<TestRunMetrics> {
       `    Memory: ${memResult.results.length} hits in ${memResult.durationMs}ms`
     );
 
-    // Step 2: Build enriched prompt with memory context + previous task results
     let enrichedPrompt = spec.task;
 
-    // Add memory context
     if (memResult.results.length > 0) {
       const memContext = memResult.results
-        .map(
-          (r) => `- ${r.entity}.${r.key}: ${r.value}`
-        )
+        .map((r) => `- ${r.entity}.${r.key}: ${r.value}`)
         .join("\n");
       enrichedPrompt += `\n\n## Prior Knowledge (from memory system)\n${memContext}`;
     }
 
-    // Add cross-task context from previous specialists
     if (previousResults.length > 0) {
       const crossContext = previousResults
-        .map(
-          (r) =>
-            `### ${r.persona} (${r.category}):\n${r.summary}`
-        )
+        .map((r) => `### ${r.persona} (${r.category}):\n${r.summary}`)
         .join("\n\n");
       enrichedPrompt += `\n\n## Context from Other Specialists\nThe following specialists have already reviewed the site. Reference their findings where relevant to avoid duplication and provide cross-domain insights:\n\n${crossContext}`;
     }
@@ -491,26 +426,14 @@ async function runEnhanced(): Promise<TestRunMetrics> {
     const outputTokens = estimateTokens(output);
     const findings = countFindings(output);
 
-    // Store result summary in memory for subsequent specialists
     if (success) {
       const summary = output.slice(0, 500);
-      previousResults.push({
-        persona: spec.persona,
-        category: spec.category,
-        summary,
-      });
+      previousResults.push({ persona: spec.persona, category: spec.category, summary });
 
-      // Persist key findings to memory
       await storeMemoryFact(
-        "ffb-review",
+        "site-review",
         `${spec.category}-score`,
         output.match(/(\d+)\/10/)?.[0] || "N/A",
-        "fact"
-      );
-      await storeMemoryFact(
-        "ffb-review",
-        `${spec.category}-findings`,
-        `P0: ${findings.p0}, P1: ${findings.p1}, P2: ${findings.p2}. ${summary.slice(0, 200)}`,
         "fact"
       );
     }
@@ -534,13 +457,12 @@ async function runEnhanced(): Promise<TestRunMetrics> {
       `    ${success ? "OK" : "FAIL"} | ${execMs}ms | ~${promptTokens}+${outputTokens} tokens | ${output.length} chars | ${findings.total} findings | +${memContextTokens} ctx tokens`
     );
 
-    // Rate limit protection
     await new Promise((r) => setTimeout(r, 1500));
   }
 
   const totalDuration = Date.now() - totalStart;
   const successfulTasks = tasks.filter((t) => t.success);
-  const allOutput = tasks.map((t) => t.outputLength).reduce((a, b) => a + b, 0);
+  const allOutput = tasks.reduce((s, t) => s + t.outputLength, 0);
   const totalPrompt = tasks.reduce((s, t) => s + t.promptTokensEstimated, 0);
   const totalOutput = tasks.reduce((s, t) => s + t.outputTokensEstimated, 0);
 
@@ -590,7 +512,7 @@ interface ComparisonReport {
     outputTokenDelta: number;
     costDeltaUSD: number;
     costDeltaPct: number;
-    outputQualityDelta: number; // chars difference
+    outputQualityDelta: number;
     avgTaskSpeedDelta: number;
   };
   memoryMetrics: {
@@ -598,7 +520,7 @@ interface ComparisonReport {
     avgRetrievalMs: number;
     totalHits: number;
     contextTokensAdded: number;
-    overheadPct: number; // memory overhead as % of total duration
+    overheadPct: number;
   };
 }
 
@@ -608,31 +530,25 @@ function generateComparison(
 ): ComparisonReport {
   return {
     timestamp: new Date().toISOString(),
-    testSubject: "Fauna & Flora Botanicals Website Review",
+    testSubject: `Website Review: ${TARGET_URL}`,
     baseline,
     enhanced,
     deltas: {
       durationDeltaMs: enhanced.totalDurationMs - baseline.totalDurationMs,
       durationDeltaPct:
         ((enhanced.totalDurationMs - baseline.totalDurationMs) /
-          baseline.totalDurationMs) *
-        100,
+          baseline.totalDurationMs) * 100,
       tokenDeltaTotal: enhanced.totalTokens - baseline.totalTokens,
       tokenDeltaPct:
-        ((enhanced.totalTokens - baseline.totalTokens) / baseline.totalTokens) *
-        100,
-      promptTokenDelta:
-        enhanced.totalPromptTokens - baseline.totalPromptTokens,
-      outputTokenDelta:
-        enhanced.totalOutputTokens - baseline.totalOutputTokens,
+        ((enhanced.totalTokens - baseline.totalTokens) / baseline.totalTokens) * 100,
+      promptTokenDelta: enhanced.totalPromptTokens - baseline.totalPromptTokens,
+      outputTokenDelta: enhanced.totalOutputTokens - baseline.totalOutputTokens,
       costDeltaUSD: enhanced.estimatedCostUSD - baseline.estimatedCostUSD,
       costDeltaPct:
         ((enhanced.estimatedCostUSD - baseline.estimatedCostUSD) /
-          baseline.estimatedCostUSD) *
-        100,
+          baseline.estimatedCostUSD) * 100,
       outputQualityDelta: enhanced.totalOutputChars - baseline.totalOutputChars,
-      avgTaskSpeedDelta:
-        enhanced.avgTaskDurationMs - baseline.avgTaskDurationMs,
+      avgTaskSpeedDelta: enhanced.avgTaskDurationMs - baseline.avgTaskDurationMs,
     },
     memoryMetrics: {
       totalRetrievalMs: enhanced.totalMemoryRetrievalMs || 0,
@@ -640,8 +556,7 @@ function generateComparison(
       totalHits: enhanced.totalMemoryHits || 0,
       contextTokensAdded: enhanced.memoryContextTokensSaved || 0,
       overheadPct:
-        ((enhanced.totalMemoryRetrievalMs || 0) / enhanced.totalDurationMs) *
-        100,
+        ((enhanced.totalMemoryRetrievalMs || 0) / enhanced.totalDurationMs) * 100,
     },
   };
 }
@@ -652,10 +567,9 @@ function generateComparison(
 
 async function main() {
   console.log("╔══════════════════════════════════════════════════════╗");
-  console.log("║  FFB Performance Test — Skills vs No Skills         ║");
-  console.log("║  Test Subject: Fauna & Flora Botanicals Website     ║");
+  console.log("║  Performance Test — Skills vs No Skills             ║");
   console.log("╚══════════════════════════════════════════════════════╝");
-  console.log(`\nSite: ${SITE_URL}`);
+  console.log(`\nTarget: ${TARGET_URL}`);
   console.log(`Specialists: ${SPECIALISTS.length}`);
   console.log(`API Token: ${ZO_TOKEN ? "present" : "MISSING"}`);
 
@@ -666,42 +580,35 @@ async function main() {
     process.exit(1);
   }
 
-  // Ensure output directory
   if (!existsSync(OUTPUT_DIR)) {
     mkdirSync(OUTPUT_DIR, { recursive: true });
   }
 
-  // Run baseline test
   console.log("\n" + "=".repeat(60));
   console.log("PHASE 1: BASELINE (No Memory, No Skills)");
   console.log("=".repeat(60));
   const baseline = await runBaseline();
 
-  // Brief pause between runs
   console.log("\n--- Cooling down (5s) ---");
   await new Promise((r) => setTimeout(r, 5000));
 
-  // Run enhanced test
   console.log("\n" + "=".repeat(60));
   console.log("PHASE 2: ENHANCED (Memory + Skills Enabled)");
   console.log("=".repeat(60));
   const enhanced = await runEnhanced();
 
-  // Generate comparison
   const comparison = generateComparison(baseline, enhanced);
 
-  // Save results
-  const outputPath = join(OUTPUT_DIR, `ffb-perf-${Date.now()}.json`);
+  const outputPath = join(OUTPUT_DIR, `perf-${Date.now()}.json`);
   writeFileSync(outputPath, JSON.stringify(comparison, null, 2));
   console.log(`\nResults saved to: ${outputPath}`);
 
-  // Print summary
   console.log("\n" + "=".repeat(60));
   console.log("PERFORMANCE COMPARISON SUMMARY");
   console.log("=".repeat(60));
 
   console.log(`\n  Metric                    Baseline        Enhanced        Delta`);
-  console.log(`  ─────────────────────────────────────────────────────────────────`);
+  console.log(`  ${"─".repeat(65)}`);
   console.log(
     `  Total Duration            ${(baseline.totalDurationMs / 1000).toFixed(1)}s           ${(enhanced.totalDurationMs / 1000).toFixed(1)}s           ${comparison.deltas.durationDeltaPct > 0 ? "+" : ""}${comparison.deltas.durationDeltaPct.toFixed(1)}%`
   );
@@ -709,16 +616,7 @@ async function main() {
     `  Total Tokens              ${baseline.totalTokens}          ${enhanced.totalTokens}          ${comparison.deltas.tokenDeltaPct > 0 ? "+" : ""}${comparison.deltas.tokenDeltaPct.toFixed(1)}%`
   );
   console.log(
-    `  Prompt Tokens             ${baseline.totalPromptTokens}          ${enhanced.totalPromptTokens}          ${comparison.deltas.promptTokenDelta > 0 ? "+" : ""}${comparison.deltas.promptTokenDelta}`
-  );
-  console.log(
-    `  Output Tokens             ${baseline.totalOutputTokens}          ${enhanced.totalOutputTokens}          ${comparison.deltas.outputTokenDelta > 0 ? "+" : ""}${comparison.deltas.outputTokenDelta}`
-  );
-  console.log(
     `  Avg Task Duration         ${(baseline.avgTaskDurationMs / 1000).toFixed(1)}s           ${(enhanced.avgTaskDurationMs / 1000).toFixed(1)}s           ${comparison.deltas.avgTaskSpeedDelta > 0 ? "+" : ""}${(comparison.deltas.avgTaskSpeedDelta / 1000).toFixed(1)}s`
-  );
-  console.log(
-    `  Output Quality (chars)    ${baseline.totalOutputChars}          ${enhanced.totalOutputChars}          ${comparison.deltas.outputQualityDelta > 0 ? "+" : ""}${comparison.deltas.outputQualityDelta}`
   );
   console.log(
     `  Estimated Cost            $${baseline.estimatedCostUSD.toFixed(4)}       $${enhanced.estimatedCostUSD.toFixed(4)}       ${comparison.deltas.costDeltaPct > 0 ? "+" : ""}${comparison.deltas.costDeltaPct.toFixed(1)}%`
@@ -727,19 +625,11 @@ async function main() {
     `  Success Rate              ${(baseline.successRate * 100).toFixed(0)}%             ${(enhanced.successRate * 100).toFixed(0)}%`
   );
   console.log(`\n  Memory Metrics (Enhanced only):`);
-  console.log(
-    `  Total Retrieval Time      ${comparison.memoryMetrics.totalRetrievalMs}ms`
-  );
-  console.log(
-    `  Avg Retrieval Time        ${comparison.memoryMetrics.avgRetrievalMs.toFixed(1)}ms`
-  );
+  console.log(`  Total Retrieval Time      ${comparison.memoryMetrics.totalRetrievalMs}ms`);
+  console.log(`  Avg Retrieval Time        ${comparison.memoryMetrics.avgRetrievalMs.toFixed(1)}ms`);
   console.log(`  Total Memory Hits         ${comparison.memoryMetrics.totalHits}`);
-  console.log(
-    `  Context Tokens Added      ${comparison.memoryMetrics.contextTokensAdded}`
-  );
-  console.log(
-    `  Memory Overhead           ${comparison.memoryMetrics.overheadPct.toFixed(2)}%`
-  );
+  console.log(`  Context Tokens Added      ${comparison.memoryMetrics.contextTokensAdded}`);
+  console.log(`  Memory Overhead           ${comparison.memoryMetrics.overheadPct.toFixed(2)}%`);
 
   console.log(`\nDone.`);
 }

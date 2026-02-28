@@ -1,70 +1,70 @@
 {
   "patterns": [
     {
-      "name": "investment-decision",
-      "description": "Multi-angle analysis for investment decisions",
-      "personas": ["financial-advisor", "research-analyst", "risk-analyst"],
+      "name": "website-review",
+      "description": "Multi-angle website audit covering UX, performance, security, and SEO",
+      "personas": ["frontend-developer", "security-engineer", "backend-architect"],
       "tasks": {
-        "financial-advisor": "Analyze valuation, financial health, and investment merit",
-        "research-analyst": "Research competitive landscape and market position",
-        "risk-analyst": "Assess key risk factors and downside scenarios"
-      },
-      "synthesize": true,
-      "output_format": "recommendation"
-    },
-    {
-      "name": "portfolio-review",
-      "description": "Comprehensive portfolio analysis",
-      "personas": ["financial-advisor", "risk-analyst", "tax-advisor"],
-      "tasks": {
-        "financial-advisor": "Analyze allocation efficiency and expected returns",
-        "risk-analyst": "Assess concentration risk and correlation exposure",
-        "tax-advisor": "Evaluate tax efficiency and harvesting opportunities"
+        "frontend-developer": "Audit UI/UX, accessibility, responsive design, and user flow",
+        "security-engineer": "Review security headers, TLS, authentication, and vulnerability exposure",
+        "backend-architect": "Assess performance, caching, API design, and scalability concerns"
       },
       "synthesize": true,
       "output_format": "markdown"
     },
     {
-      "name": "market-outlook",
-      "description": "Comprehensive market outlook analysis",
-      "personas": ["macro-economist", "technical-analyst", "news-monitor"],
+      "name": "codebase-review",
+      "description": "Comprehensive code quality and architecture review",
+      "personas": ["backend-architect", "security-engineer", "devops-engineer"],
       "tasks": {
-        "macro-economist": "Analyze macroeconomic indicators and policy outlook",
-        "technical-analyst": "Assess technical trends and market breadth",
-        "news-monitor": "Summarize recent market-moving events and sentiment"
+        "backend-architect": "Review architecture patterns, code organization, and technical debt",
+        "security-engineer": "Identify security vulnerabilities and unsafe patterns",
+        "devops-engineer": "Assess build pipeline, test coverage, and deployment readiness"
       },
       "synthesize": true,
       "output_format": "markdown"
     },
     {
-      "name": "stock-deep-dive",
-      "description": "Comprehensive single stock analysis",
-      "personas": ["financial-advisor", "research-analyst", "technical-analyst", "risk-analyst"],
+      "name": "product-launch",
+      "description": "Pre-launch readiness assessment across engineering, product, and docs",
+      "personas": ["product-manager", "frontend-developer", "technical-writer"],
       "tasks": {
-        "financial-advisor": "Analyze financial statements and valuation metrics",
-        "research-analyst": "Research business model, competition, and growth drivers",
-        "technical-analyst": "Analyze price trends, support/resistance, and momentum",
-        "risk-analyst": "Identify key risks and stress test scenarios"
+        "product-manager": "Evaluate feature completeness, user stories, and launch criteria",
+        "frontend-developer": "Review UI polish, edge cases, and cross-browser compatibility",
+        "technical-writer": "Assess documentation completeness, onboarding flow, and changelog"
       },
       "synthesize": true,
-      "output_format": "recommendation"
+      "output_format": "markdown"
     },
     {
-      "name": "sector-analysis",
-      "description": "Industry/sector-level analysis",
-      "personas": ["research-analyst", "macro-economist", "esg-analyst"],
+      "name": "deep-research",
+      "description": "Multi-perspective research and analysis on a topic",
+      "personas": ["research-analyst", "data-scientist", "product-manager", "technical-writer"],
       "tasks": {
-        "research-analyst": "Analyze industry structure, trends, and key players",
-        "macro-economist": "Assess macro factors affecting the sector",
-        "esg-analyst": "Evaluate sector ESG considerations and sustainability"
+        "research-analyst": "Gather primary sources, competitive landscape, and trend data",
+        "data-scientist": "Analyze quantitative data, identify patterns, and validate claims",
+        "product-manager": "Assess market fit, user impact, and strategic implications",
+        "technical-writer": "Synthesize findings into a clear, structured report"
+      },
+      "synthesize": true,
+      "output_format": "markdown"
+    },
+    {
+      "name": "incident-postmortem",
+      "description": "Post-incident analysis across infrastructure, security, and process",
+      "personas": ["devops-engineer", "security-engineer", "backend-architect"],
+      "tasks": {
+        "devops-engineer": "Analyze infrastructure logs, deployment timeline, and monitoring gaps",
+        "security-engineer": "Assess whether the incident had security implications or root causes",
+        "backend-architect": "Identify architectural weaknesses that contributed to the incident"
       },
       "synthesize": true,
       "output_format": "markdown"
     },
     {
       "name": "validation-swarm",
-      "description": "Multiple agents validate the same thesis",
-      "personas": ["financial-advisor", "risk-analyst", "research-analyst"],
+      "description": "Multiple agents independently validate the same thesis or claim",
+      "personas": ["research-analyst", "data-scientist", "backend-architect"],
       "mode": "validate",
       "consensus_threshold": 0.7,
       "synthesize": true,

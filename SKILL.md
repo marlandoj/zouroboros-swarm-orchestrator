@@ -232,7 +232,7 @@ Create `config.json` in the skill root:
 
 ```json
 {
-  "maxConcurrency": 20,
+  "maxConcurrency": 3,
   "timeoutSeconds": 605,
   "maxRetries": 3,
   "memory": {

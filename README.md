@@ -47,7 +47,7 @@ This orchestrator solves all of these. It was battle-tested through [production 
 | **Personas** | Fuzzy persona matching | Levenshtein distance matching for unknown persona names (0.25 threshold) |
 | | Persona memory bridge | Queries the shared Zo memory system for persona-specific facts |
 | | Inter-agent messaging | Agents can send/receive messages through SQLite-backed channels |
-| **Patterns** | Pre-built swarm patterns | 6 ready-to-use analysis patterns (investment, portfolio, market outlook, etc.) |
+| **Patterns** | Pre-built swarm patterns | 6 ready-to-use analysis patterns (website review, codebase review, product launch, etc.) |
 | | Persona registry | 8 specialized personas with defined expertise and tool access |
 
 ---
@@ -138,41 +138,41 @@ Tasks are defined as a JSON array. Each task can declare DAG dependencies, a mem
   {
     "id": "plan",
     "persona": "research-analyst",
-    "task": "Create analysis plan for the target company",
+    "task": "Create analysis plan for the target system",
     "priority": "critical"
   },
   {
-    "id": "fundamentals",
-    "persona": "financial-advisor",
-    "task": "Analyze financial statements and valuation metrics",
+    "id": "analysis",
+    "persona": "backend-architect",
+    "task": "Analyze system architecture and identify improvement areas",
     "priority": "high",
     "dependsOn": ["plan"],
     "memoryStrategy": "hierarchical",
     "outputToMemory": true,
     "memoryMetadata": {
-      "category": "financial-analysis",
-      "tags": ["valuation", "fundamentals"]
+      "category": "architecture-review",
+      "tags": ["architecture", "analysis"]
     }
   },
   {
     "id": "risks",
-    "persona": "risk-analyst",
-    "task": "Assess downside scenarios and key risk factors",
+    "persona": "security-engineer",
+    "task": "Assess security risks and vulnerability exposure",
     "priority": "high",
     "dependsOn": ["plan"],
     "contextAccess": "read"
   },
   {
     "id": "synthesis",
-    "persona": "financial-advisor",
-    "task": "Synthesize all findings into a final recommendation",
+    "persona": "product-manager",
+    "task": "Synthesize all findings into a prioritized action plan",
     "priority": "critical",
-    "dependsOn": ["fundamentals", "risks"]
+    "dependsOn": ["analysis", "risks"]
   }
 ]
 ```
 
-This creates a DAG: `plan` → `[fundamentals, risks]` (parallel) → `synthesis`.
+This creates a DAG: `plan` → `[analysis, risks]` (parallel) → `synthesis`.
 
 ---
 
@@ -236,12 +236,12 @@ Six ready-to-use analysis patterns in `assets/swarm-patterns.json`:
 
 | Pattern | Personas | Purpose |
 |---------|----------|---------|
-| `investment-decision` | financial-advisor, research-analyst, risk-analyst | Multi-angle investment thesis |
-| `portfolio-review` | financial-advisor, risk-analyst, tax-advisor | Comprehensive portfolio health check |
-| `market-outlook` | macro-economist, technical-analyst, news-monitor | Macro + technical + sentiment synthesis |
-| `stock-deep-dive` | financial-advisor, research-analyst, technical-analyst, risk-analyst | Full single-stock analysis |
-| `sector-analysis` | research-analyst, macro-economist, esg-analyst | Industry-level assessment |
-| `validation-swarm` | financial-advisor, risk-analyst, research-analyst | Consensus validation (0.7 threshold) |
+| `website-review` | frontend-developer, security-engineer, backend-architect | Multi-angle website audit |
+| `codebase-review` | backend-architect, security-engineer, devops-engineer | Code quality and architecture review |
+| `product-launch` | product-manager, frontend-developer, technical-writer | Pre-launch readiness assessment |
+| `deep-research` | research-analyst, data-scientist, product-manager, technical-writer | Multi-perspective research and analysis |
+| `incident-postmortem` | devops-engineer, security-engineer, backend-architect | Post-incident root cause analysis |
+| `validation-swarm` | research-analyst, data-scientist, backend-architect | Consensus validation (0.7 threshold) |
 
 ---
 
@@ -251,14 +251,14 @@ Eight specialized personas in `assets/persona-registry.json`:
 
 | Persona | Expertise |
 |---------|-----------|
-| `financial-advisor` | Valuation, portfolio management, investment strategy |
 | `research-analyst` | Data gathering, competitive analysis, trend synthesis |
-| `risk-analyst` | Risk assessment, stress testing, downside scenarios |
-| `technical-analyst` | Chart patterns, indicators, momentum analysis |
-| `news-monitor` | News sentiment, event impact, market-moving catalysts |
-| `tax-advisor` | Tax optimization, harvesting, efficiency planning |
-| `macro-economist` | Economic indicators, policy analysis, rate forecasting |
-| `esg-analyst` | ESG ratings, sustainability metrics, governance review |
+| `frontend-developer` | UI/UX, accessibility, responsive design, performance |
+| `backend-architect` | System design, API design, scalability, databases |
+| `security-engineer` | Security auditing, threat modeling, vulnerability assessment |
+| `product-manager` | Product strategy, user stories, roadmap, stakeholder management |
+| `data-scientist` | Data analysis, statistical modeling, ML pipelines |
+| `devops-engineer` | CI/CD, infrastructure, monitoring, containerization |
+| `technical-writer` | Documentation, API docs, user guides, content strategy |
 
 ---
 
@@ -288,8 +288,8 @@ bun ab-test.ts
 # Integration tests
 bun integration-test-runner.ts
 
-# FFB performance workload
-bun ffb-performance-test.ts
+# Performance test (baseline vs memory-enhanced)
+bun performance-test.ts --url https://example.com
 ```
 
 ---
@@ -356,7 +356,7 @@ zo-swarm-orchestrator/
 │   ├── ab-test.ts                    # A/B testing framework
 │   ├── inter-agent-comms.ts          # Agent messaging demo
 │   ├── orchestrate-with-comms.ts     # Orchestrator + messaging demo
-│   ├── ffb-performance-test.ts       # FFB workload performance test
+│   ├── performance-test.ts           # Baseline vs enhanced performance test
 │   ├── integration-test-runner.ts    # Integration test suite
 │   └── integration-test-v2.ts        # Integration test v2
 ├── assets/

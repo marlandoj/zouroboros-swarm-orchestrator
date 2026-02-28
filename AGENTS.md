@@ -4,7 +4,7 @@
 
 ### February 2026 Incident Analysis
 
-**Context:** Attempted to use swarm orchestrator for Fauna & Flora website review with 5 agents simultaneously.
+**Context:** Attempted to use swarm orchestrator for a multi-page website review with 5 agents simultaneously.
 
 **What Failed:**
 1. All parallel API calls timed out (120s insufficient)

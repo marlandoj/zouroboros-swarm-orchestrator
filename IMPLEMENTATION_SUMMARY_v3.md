@@ -127,17 +127,17 @@ Initial sessions: 0
 📋 STEP 5: Retrieving Previous Context
 ─────────────────────────────────────────────
 Contexts found for swarm: 2
-  ✓ Financial analysis retrieved
-  ✓ Market research retrieved
+  ✓ Analysis report retrieved
+  ✓ Research report retrieved
 
 📋 STEP 6: Context Injection Simulation
-─────────────────────────────────────────────
+─────────────────────────────────────────────────
 ✓ Formatted context ready for agent prompts
 
 📋 STEP 7: Querying by Tags
-─────────────────────────────────────────────
-Contexts tagged with "investments": 1
-  ✓ Found: financial-advisor analysis
+─────────────────────────────────────────────────
+Contexts tagged with "analysis": 1
+  ✓ Found: research-analyst analysis
 
 📋 STEP 8: Context Append Operation
 ─────────────────────────────────────────────
@@ -170,7 +170,7 @@ $ bun swarm-memory.ts list-contexts demo-ai-analysis-2026
   demo-ai-analysis-2026_1770757050710_71yuwu5tb
     Version: 1
     Created: 2/10/2026, 8:57:30 PM
-    Preview: ## Investment Opportunities Analysis...
+    Preview: ## Opportunities Analysis...
 ```
 
 ---
@@ -226,15 +226,15 @@ bun swarm-memory.ts cleanup 30  # Remove contexts older than 30 days
   },
   {
     "id": "analysis-phase",
-    "persona": "financial-advisor",
+    "persona": "data-scientist",
     "task": "Based on research findings...",
     "priority": "high",
     "contextAccess": "read",
     "contextTags": ["market-research"],
     "outputToMemory": true,
     "memoryMetadata": {
-      "category": "investment-opportunities",
-      "tags": ["investments"]
+      "category": "deep-analysis",
+      "tags": ["analysis"]
     }
   }
 ]

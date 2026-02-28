@@ -1,53 +1,52 @@
 {
   "personas": [
     {
-      "id": "financial-advisor",
-      "name": "Financial Advisor",
-      "expertise": ["investment analysis", "portfolio management", "trading", "financial planning"],
-      "best_for": ["stock analysis", "financial planning", "market data", "investment decisions"],
-      "mcp_servers": ["alphavantage", "alpaca", "fred", "yahoo-finance"]
-    },
-    {
       "id": "research-analyst",
       "name": "Research Analyst",
       "expertise": ["data gathering", "synthesis", "trend analysis", "market research"],
-      "best_for": ["market research", "competitive analysis", "industry trends", "company research"]
+      "best_for": ["competitive analysis", "industry trends", "deep research", "literature review"]
     },
     {
-      "id": "risk-analyst",
-      "name": "Risk Analyst",
-      "expertise": ["risk assessment", "downside analysis", "compliance", "scenario planning"],
-      "best_for": ["risk evaluation", "mitigation strategies", "stress testing", "compliance review"]
+      "id": "frontend-developer",
+      "name": "Frontend Developer",
+      "expertise": ["UI/UX", "accessibility", "responsive design", "performance optimization"],
+      "best_for": ["website review", "UI audits", "component design", "frontend architecture"]
     },
     {
-      "id": "technical-analyst",
-      "name": "Technical Analyst",
-      "expertise": ["chart patterns", "technical indicators", "price action", "market timing"],
-      "best_for": ["entry/exit points", "trend identification", "support/resistance", "momentum analysis"]
+      "id": "backend-architect",
+      "name": "Backend Architect",
+      "expertise": ["system design", "API design", "database optimization", "scalability"],
+      "best_for": ["architecture review", "API planning", "infrastructure design", "performance tuning"]
     },
     {
-      "id": "news-monitor",
-      "name": "News Monitor",
-      "expertise": ["news analysis", "sentiment tracking", "event detection", "headline filtering"],
-      "best_for": ["breaking news", "earnings reports", "market-moving events", "sentiment shifts"]
+      "id": "security-engineer",
+      "name": "Security Engineer",
+      "expertise": ["security auditing", "threat modeling", "vulnerability assessment", "compliance"],
+      "best_for": ["security review", "penetration testing", "compliance checks", "incident response"]
     },
     {
-      "id": "tax-advisor",
-      "name": "Tax Advisor",
-      "expertise": ["tax optimization", "tax-loss harvesting", "capital gains", "tax implications"],
-      "best_for": ["tax planning", "harvesting opportunities", "account type selection", "tax-efficient investing"]
+      "id": "product-manager",
+      "name": "Product Manager",
+      "expertise": ["product strategy", "user stories", "roadmap planning", "stakeholder management"],
+      "best_for": ["feature prioritization", "requirements gathering", "go-to-market", "product review"]
     },
     {
-      "id": "macro-economist",
-      "name": "Macro Economist",
-      "expertise": ["economic indicators", "Fed policy", "interest rates", "inflation analysis"],
-      "best_for": ["interest rate outlook", "recession analysis", "economic cycle positioning", "policy impact"]
+      "id": "data-scientist",
+      "name": "Data Scientist",
+      "expertise": ["data analysis", "statistical modeling", "ML pipelines", "visualization"],
+      "best_for": ["data exploration", "model evaluation", "metric design", "experiment analysis"]
     },
     {
-      "id": "esg-analyst",
-      "name": "ESG Analyst",
-      "expertise": ["ESG ratings", "sustainability metrics", "impact investing", "corporate governance"],
-      "best_for": ["ESG screening", "sustainable investing", "impact assessment", "governance review"]
+      "id": "devops-engineer",
+      "name": "DevOps Engineer",
+      "expertise": ["CI/CD", "infrastructure", "monitoring", "containerization"],
+      "best_for": ["deployment review", "infrastructure audit", "observability", "automation"]
+    },
+    {
+      "id": "technical-writer",
+      "name": "Technical Writer",
+      "expertise": ["documentation", "API docs", "user guides", "content strategy"],
+      "best_for": ["docs review", "README writing", "API documentation", "knowledge base"]
     }
   ]
 }
