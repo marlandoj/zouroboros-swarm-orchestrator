@@ -1,20 +1,43 @@
 [
   {
-    "id": "financial-analysis",
-    "persona": "Financial Advisor",
-    "task": "Analyze the top 3 foreign markets (outside US) for investment opportunities in 2026. Focus on: 1) GDP growth trajectories, 2) Currency stability vs USD, 3) Interest rate environments, 4) Major stock index performance (NIKKEI, DAX, FTSE, etc.). Provide specific ETF or index fund recommendations for each market with rationale. Keep response under 800 words.",
-    "priority": "high"
+    "id": "landscape-research",
+    "persona": "research-analyst",
+    "task": "Research the current landscape for the given topic. Identify 8-12 key players, emerging trends, and recent developments. For each player identified, provide: name, key differentiators, estimated market position, and target audience. Categorize by: Direct Competitors, Indirect Competitors, and Aspirational Leaders.",
+    "priority": "critical",
+    "contextAccess": "none",
+    "outputToMemory": true,
+    "memoryMetadata": {
+      "category": "landscape-research",
+      "priority": "critical",
+      "tags": ["research", "competitors", "landscape"]
+    }
   },
   {
-    "id": "market-dynamics",
-    "persona": "Research Analyst",
-    "task": "Research current foreign market dynamics and emerging trends for 2026. Cover: 1) Sector opportunities (tech, energy, healthcare) by region, 2) Demographic trends affecting markets, 3) Technology adoption rates, 4) Consumer behavior shifts. Identify 2-3 standout countries with strong growth catalysts. Keep response under 800 words.",
-    "priority": "high"
+    "id": "trend-analysis",
+    "persona": "data-scientist",
+    "task": "Analyze current trends and dynamics in the target domain. Cover: 1) Growth trajectories and adoption curves, 2) Technology shifts and disruptions, 3) Demographic and behavioral changes, 4) Regional variations. Identify 2-3 standout opportunities with strong growth catalysts.",
+    "priority": "high",
+    "contextAccess": "read",
+    "contextTags": ["landscape-research"],
+    "outputToMemory": true,
+    "memoryMetadata": {
+      "category": "trend-analysis",
+      "priority": "high",
+      "tags": ["trends", "analysis", "growth"]
+    }
   },
   {
     "id": "risk-assessment",
-    "persona": "Risk Analyst",
-    "task": "Assess geopolitical and economic risks for foreign market investing in 2026. Analyze: 1) Political stability concerns by region, 2) Currency hedging considerations, 3) Regulatory/tax implications for US investors, 4) Liquidity and market access risks. Provide risk mitigation strategies. Keep response under 800 words.",
-    "priority": "critical"
+    "persona": "security-engineer",
+    "task": "Assess risks and challenges in the target domain. Analyze: 1) Regulatory and compliance concerns, 2) Technical debt and scalability risks, 3) Competitive threats, 4) Market timing and execution risks. Provide mitigation strategies for each.",
+    "priority": "critical",
+    "contextAccess": "read",
+    "contextTags": ["landscape-research"],
+    "outputToMemory": true,
+    "memoryMetadata": {
+      "category": "risk-assessment",
+      "priority": "critical",
+      "tags": ["risks", "mitigation", "assessment"]
+    }
   }
 ]

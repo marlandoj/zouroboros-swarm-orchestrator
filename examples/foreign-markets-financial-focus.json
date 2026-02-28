@@ -1,26 +1,54 @@
 [
   {
-    "id": "japan-market-analysis",
-    "persona": "financial-advisor",
-    "task": "Analyze Japan as a 2026 investment destination. Use your market data tools to provide: 1) Current NIKKEI 225 level and YTD performance, 2) USD/JPY exchange rate trend, 3) Bank of Japan interest rate policy outlook, 4) Top 3 Japan ETFs with expense ratios (EWJ, HEWJ, DXJ), 5) GDP growth forecast for 2026. Present data in a clear table format with investment recommendation (Buy/Neutral/Avoid). Keep under 600 words.",
-    "priority": "critical"
+    "id": "market-a-analysis",
+    "persona": "research-analyst",
+    "task": "Analyze Market A as a potential opportunity. Research: 1) Current market size and growth rate, 2) Key players and market share, 3) Barriers to entry, 4) Recent developments and news. Present data in a clear table format with an overall assessment (Strong/Moderate/Weak). Keep under 600 words.",
+    "priority": "critical",
+    "contextAccess": "none",
+    "outputToMemory": true,
+    "memoryMetadata": {
+      "category": "market-analysis",
+      "priority": "critical",
+      "tags": ["market-a", "research"]
+    }
   },
   {
-    "id": "india-market-analysis",
-    "persona": "financial-advisor",
-    "task": "Analyze India as a 2026 investment destination. Use your market data tools to provide: 1) Current NIFTY 50/SENSEX levels and YTD performance, 2) USD/INR exchange rate trend, 3) RBI interest rate policy outlook, 4) Top 3 India ETFs with expense ratios (INDA, SMIN, PIN), 5) GDP growth forecast for 2026. Present data in a clear table format with investment recommendation (Buy/Neutral/Avoid). Keep under 600 words.",
-    "priority": "critical"
+    "id": "market-b-analysis",
+    "persona": "research-analyst",
+    "task": "Analyze Market B as a potential opportunity. Research: 1) Current market size and growth rate, 2) Key players and market share, 3) Barriers to entry, 4) Recent developments and news. Present data in a clear table format with an overall assessment (Strong/Moderate/Weak). Keep under 600 words.",
+    "priority": "critical",
+    "contextAccess": "none",
+    "outputToMemory": true,
+    "memoryMetadata": {
+      "category": "market-analysis",
+      "priority": "critical",
+      "tags": ["market-b", "research"]
+    }
   },
   {
-    "id": "europe-market-analysis",
-    "persona": "financial-advisor",
-    "task": "Analyze European markets (Germany/DAX, UK/FTSE) as 2026 investment destinations. Use your market data tools to provide: 1) Current DAX and FTSE 100 levels with YTD performance, 2) EUR/USD and GBP/USD trends, 3) ECB/BoE interest rate outlook, 4) Top 3 Europe ETFs with expense ratios (VGK, HEDJ, EZU), 5) GDP growth forecasts for 2026. Present data in clear table format with investment recommendation (Buy/Neutral/Avoid). Keep under 600 words.",
-    "priority": "high"
+    "id": "comparative-analysis",
+    "persona": "product-manager",
+    "task": "Compare the analyses of Market A and Market B. Evaluate: 1) Relative opportunity size, 2) Risk-adjusted attractiveness, 3) Resource requirements, 4) Time to impact. Provide a ranked recommendation with rationale. Keep under 600 words.",
+    "priority": "high",
+    "contextAccess": "read",
+    "outputToMemory": true,
+    "memoryMetadata": {
+      "category": "comparative-analysis",
+      "priority": "high",
+      "tags": ["comparison", "recommendation"]
+    }
   },
   {
-    "id": "emerging-markets-analysis",
-    "persona": "financial-advisor",
-    "task": "Analyze broader emerging markets (Vietnam, Indonesia, Brazil, Mexico) for 2026. Use your market data tools to provide: 1) MSCI Emerging Markets index performance YTD, 2) Currency stability overview (VND, IDR, BRL, MXN vs USD), 3) Top 3 broad emerging market ETFs (VWO, IEMG, SCHE) with expense ratios, 4) Single-country ETF options if available. Present data with investment recommendation and risk warnings. Keep under 600 words.",
-    "priority": "high"
+    "id": "execution-plan",
+    "persona": "product-manager",
+    "task": "Based on all previous analyses, create a prioritized execution plan. Include: 1) Recommended market entry sequence, 2) Key milestones and timeline, 3) Resource allocation, 4) Risk mitigation steps. Format as an actionable roadmap. Keep under 600 words.",
+    "priority": "high",
+    "contextAccess": "read",
+    "outputToMemory": true,
+    "memoryMetadata": {
+      "category": "execution-plan",
+      "priority": "high",
+      "tags": ["plan", "roadmap", "execution"]
+    }
   }
 ]

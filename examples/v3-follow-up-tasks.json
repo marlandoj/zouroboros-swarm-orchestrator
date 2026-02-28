@@ -2,29 +2,29 @@
   {
     "id": "follow-up-research",
     "persona": "research-analyst",
-    "task": "Review the previous AI market research and identify any new developments since the initial analysis. Focus on: 1) Any major announcements from the companies we identified, 2) Competitive landscape changes, 3) Updated analyst ratings. Append your findings to the existing research context.",
+    "task": "Review the previous research and identify any new developments since the initial analysis. Focus on: 1) Any major announcements from key players, 2) Landscape changes, 3) Updated assessments or data. Append your findings to the existing research context.",
     "priority": "high",
     "contextAccess": "append",
-    "contextTags": ["market-research", "ai"],
+    "contextTags": ["research", "landscape"],
     "outputToMemory": true,
     "memoryMetadata": {
-      "category": "market-research",
+      "category": "research",
       "priority": "high",
-      "tags": ["ai", "follow-up", "updates"]
+      "tags": ["follow-up", "updates"]
     }
   },
   {
-    "id": "updated-valuation",
-    "persona": "financial-advisor",
-    "task": "Re-evaluate the previously recommended AI investment opportunities based on the updated research. Provide: 1) Updated price targets, 2) Any changes to position sizing recommendations, 3) New opportunities that emerged, 4) Any positions to exit. Reference both original and follow-up research.",
+    "id": "updated-recommendations",
+    "persona": "product-manager",
+    "task": "Re-evaluate the previously recommended actions based on the updated research. Provide: 1) Updated priority rankings, 2) Any changes to recommendations, 3) New opportunities that emerged, 4) Any actions to deprioritize. Reference both original and follow-up research.",
     "priority": "critical",
     "contextAccess": "read",
-    "contextTags": ["market-research", "investment-opportunities"],
+    "contextTags": ["research", "analysis"],
     "outputToMemory": true,
     "memoryMetadata": {
       "category": "updated-recommendations",
       "priority": "critical",
-      "tags": ["ai", "updates", "rebalancing"]
+      "tags": ["updates", "revised-plan"]
     }
   }
 ]
