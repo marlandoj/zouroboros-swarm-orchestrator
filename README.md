@@ -32,7 +32,9 @@ This orchestrator solves all of these. It was battle-tested through [production 
 |----------|---------|---------|
 | **Execution** | DAG task dependencies | Tasks declare `dependsOn` — the engine resolves the graph and streams execution as dependencies clear |
 | | Streaming & wave modes | `streaming` (default) launches tasks immediately; `waves` waits for full dependency levels |
-| | Configurable concurrency | Tune parallel agents (default: 3) to match API rate limits |
+| | Split concurrency | Separate limits for API agents (default: 5) and local executors (default: 4) |
+| | Local executors | Route tasks to Claude Code or Hermes via bridge scripts — no API needed |
+| | Multi-backend API | Anthropic direct, Zo API, or local-only — automatic fallback chain |
 | **Memory** | 4 memory strategies | `none`, `sliding`, `hierarchical`, `sequential` — choose per-task or globally |
 | | Token budget management | Hard caps on context size with automatic truncation and budget utilization tracking |
 | | Pre-warm caching (O3) | Domain-specific facts cached for 1 hour — 3-8% latency savings |
@@ -48,7 +50,7 @@ This orchestrator solves all of these. It was battle-tested through [production 
 | | Persona memory bridge | Queries the shared Zo memory system for persona-specific facts |
 | | Inter-agent messaging | Agents can send/receive messages through SQLite-backed channels |
 | **Patterns** | Pre-built swarm patterns | 6 ready-to-use analysis patterns (website review, codebase review, product launch, etc.) |
-| | Persona registry | 8 specialized personas with defined expertise and tool access |
+| | Persona registry | 10 personas including 2 local executors (Claude Code, Hermes) |
 
 ---
 
@@ -72,33 +74,35 @@ bun orchestrate-v4.ts doctor
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│                  Orchestrator                    │
-│                                                  │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────┐  │
-│  │   DAG    │  │  Token   │  │   Circuit    │  │
-│  │ Resolver │  │ Budgets  │  │   Breaker    │  │
-│  └────┬─────┘  └────┬─────┘  └──────┬───────┘  │
-│       │              │               │           │
-│  ┌────▼──────────────▼───────────────▼───────┐  │
-│  │           Execution Engine                │  │
-│  │  (streaming DAG / wave-based / chunked)   │  │
-│  └────────────────┬──────────────────────────┘  │
-│                   │                              │
-│  ┌────────────────▼──────────────────────────┐  │
-│  │          Memory Layer                     │  │
-│  │  hierarchical │ sliding │ sequential │ none│  │
-│  └────────────────┬──────────────────────────┘  │
-│                   │                              │
-│  ┌────────────────▼──────────────────────────┐  │
-│  │   Zo /zo/ask API  ×  N concurrent agents  │  │
-│  └───────────────────────────────────────────┘  │
-│                                                  │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────┐  │
-│  │  NDJSON  │  │  Result  │  │  Pre-warm    │  │
-│  │  Logger  │  │  Store   │  │  Cache       │  │
-│  └──────────┘  └──────────┘  └──────────────┘  │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│                    Orchestrator                        │
+│                                                       │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────┐       │
+│  │   DAG    │  │  Token   │  │   Circuit    │       │
+│  │ Resolver │  │ Budgets  │  │   Breaker    │       │
+│  └────┬─────┘  └────┬─────┘  └──────┬───────┘       │
+│       │              │               │                │
+│  ┌────▼──────────────▼───────────────▼────────────┐  │
+│  │             Execution Engine                   │  │
+│  │    (streaming DAG / wave-based / chunked)      │  │
+│  └──────┬─────────────────────────────┬───────────┘  │
+│         │                             │               │
+│  ┌──────▼──────────────┐  ┌──────────▼────────────┐  │
+│  │   Memory Layer      │  │   Agent Router        │  │
+│  │ hierarchical/sliding│  │ local → API fallback  │  │
+│  │ sequential/none     │  └───┬──────────┬────────┘  │
+│  └─────────────────────┘      │          │            │
+│                          ┌────▼────┐ ┌───▼──────────┐ │
+│                          │ Local   │ │  API Backends │ │
+│                          │ Claude  │ │  Anthropic    │ │
+│                          │ Hermes  │ │  Zo API       │ │
+│                          └─────────┘ └──────────────┘ │
+│                                                       │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────┐       │
+│  │  NDJSON  │  │  Result  │  │  Pre-warm    │       │
+│  │  Logger  │  │  Store   │  │  Cache       │       │
+│  └──────────┘  └──────────┘  └──────────────┘       │
+└──────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -187,7 +191,10 @@ bun orchestrate-v4.ts <tasks.json> [options]
 | `--swarm-id <id>` | Unique identifier for this swarm run | auto-generated |
 | `--strategy <type>` | Memory strategy: `none`, `sliding`, `hierarchical`, `sequential` | `hierarchical` |
 | `--max-tokens <n>` | Token budget for context injection | `8000` |
-| `--concurrency <n>` | Max parallel agents | `3` |
+| `--concurrency <n>` | Max parallel API agents | `5` |
+| `--local-concurrency <n>` | Max parallel local executors | `4` |
+| `--timeout <seconds>` | Per-task timeout | `300` |
+| `--model <name>` | Model name for API calls | from env |
 | `--dag-mode <mode>` | `streaming` (immediate) or `waves` (level-by-level) | `streaming` |
 | `--no-memory` | Disable all memory systems | `false` |
 | `doctor` | Run health checks (API, memory DB, config) | — |
@@ -204,8 +211,9 @@ Three layers of configuration with clear precedence:
 
 ```json
 {
-  "maxConcurrency": 3,
-  "timeoutSeconds": 605,
+  "maxConcurrency": 5,
+  "localConcurrency": 4,
+  "timeoutSeconds": 300,
   "maxRetries": 3,
   "crossTaskContextWindow": 3,
   "memory": {
@@ -223,10 +231,17 @@ Three layers of configuration with clear precedence:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SWARM_MAX_CONCURRENCY` | Max parallel agents | `2` |
-| `SWARM_TIMEOUT_SECONDS` | Per-agent timeout | `300` |
+| `ANTHROPIC_API_KEY` | Anthropic API key (preferred backend) | — |
+| `ZO_CLIENT_IDENTITY_TOKEN` | Zo API authentication (fallback) | — |
+| `SWARM_WORKSPACE` | Root for deployment resources (IDENTITY, SOUL.md, memory) | `cwd()` |
+| `SWARM_MAX_CONCURRENCY` | Max parallel API agents | `2` |
+| `SWARM_LOCAL_CONCURRENCY` | Max parallel local executors | `4` |
+| `SWARM_TIMEOUT_SECONDS` | Per-task timeout | `300` |
 | `SWARM_MAX_RETRIES` | Retry attempts | `3` |
-| `ZO_CLIENT_IDENTITY_TOKEN` | Zo API authentication | Required |
+| `SWARM_IDENTITY_DIR` | Persona identity files directory | `$SWARM_WORKSPACE/IDENTITY` |
+| `SWARM_SOUL_FILE` | Path to constitution file | `$SWARM_WORKSPACE/SOUL.md` |
+| `SWARM_MEMORY_SCRIPT` | Memory search script path | `$SWARM_WORKSPACE/.zo/memory/scripts/memory.ts` |
+| `ZO_MEMORY_DB` | Persona memory SQLite DB | `$SWARM_WORKSPACE/.zo/memory/shared-facts.db` |
 
 ---
 
@@ -247,18 +262,20 @@ Six ready-to-use analysis patterns in `assets/swarm-patterns.json`:
 
 ## Persona Registry
 
-Eight specialized personas in `assets/persona-registry.json`:
+Ten personas in `assets/persona-registry.json`, including 2 local executors:
 
-| Persona | Expertise |
-|---------|-----------|
-| `research-analyst` | Data gathering, competitive analysis, trend synthesis |
-| `frontend-developer` | UI/UX, accessibility, responsive design, performance |
-| `backend-architect` | System design, API design, scalability, databases |
-| `security-engineer` | Security auditing, threat modeling, vulnerability assessment |
-| `product-manager` | Product strategy, user stories, roadmap, stakeholder management |
-| `data-scientist` | Data analysis, statistical modeling, ML pipelines |
-| `devops-engineer` | CI/CD, infrastructure, monitoring, containerization |
-| `technical-writer` | Documentation, API docs, user guides, content strategy |
+| Persona | Expertise | Executor |
+|---------|-----------|----------|
+| `research-analyst` | Data gathering, competitive analysis, trend synthesis | API |
+| `frontend-developer` | UI/UX, accessibility, responsive design, performance | API |
+| `backend-architect` | System design, API design, scalability, databases | API |
+| `security-engineer` | Security auditing, threat modeling, vulnerability assessment | API |
+| `product-manager` | Product strategy, user stories, roadmap, stakeholder management | API |
+| `data-scientist` | Data analysis, statistical modeling, ML pipelines | API |
+| `devops-engineer` | CI/CD, infrastructure, monitoring, containerization | API |
+| `technical-writer` | Documentation, API docs, user guides, content strategy | API |
+| `claude-code` | Software engineering, code implementation, testing, code review | Local |
+| `hermes` | Autonomous research, web scraping, multi-tool investigation | Local |
 
 ---
 
@@ -282,12 +299,6 @@ bun swarm-config.ts --show
 bun swarm-config.ts --set-max-concurrency 5
 bun swarm-config.ts --list-personas
 
-# A/B testing
-bun ab-test.ts
-
-# Integration tests
-bun integration-test-runner.ts
-
 # Performance test (baseline vs memory-enhanced)
 bun performance-test.ts --url https://example.com
 ```
@@ -296,25 +307,14 @@ bun performance-test.ts --url https://example.com
 
 ## Version History
 
-| Version | Codename | Key Innovation | Status |
-|---------|----------|----------------|--------|
-| **v4.1** | — | DAG dependencies, NDJSON logging, doctor command, result persistence, inter-agent messaging | ✅ Current |
-| **v4.0** | Token-Optimized | Hierarchical memory, token budgets, pre-warm caching, format constraints | ✅ Current |
-| **v3** | Persistent Memory | SQLite-backed cross-session memory, persona memory bridge | 🔄 Fallback |
-| **v2** | Resilient Execution | Exponential backoff, circuit breaker, chunked processing, priority queue | 🔄 Fallback |
-| **v1** | Basic Parallel | Simple `Promise.all` parallel execution | ❌ Deprecated |
-
-### Fallback Strategy
-
-All versions share the same task file format. If v4 has issues, drop back instantly:
-
-```bash
-# v3 fallback (persistent memory, no token optimization)
-bun orchestrate-v3.ts tasks.json --swarm-id my-project
-
-# v2 fallback (resilient, no memory)
-bun orchestrate-v2.ts tasks.json
-```
+| Version | Key Innovation | Status |
+|---------|----------------|--------|
+| **v4.2** | Local executors (Claude Code, Hermes), split concurrency, Anthropic direct API, configurable paths | ✅ Current |
+| **v4.1** | DAG dependencies, NDJSON logging, doctor command, result persistence, inter-agent messaging | ✅ Current |
+| **v4.0** | Hierarchical memory, token budgets, pre-warm caching, format constraints | ✅ Current |
+| v3 | SQLite-backed cross-session memory, persona memory bridge | Archived |
+| v2 | Exponential backoff, circuit breaker, chunked processing, priority queue | Archived |
+| v1 | Basic `Promise.all` parallel execution | Archived |
 
 ---
 
@@ -340,30 +340,28 @@ The full incident analysis is documented in [`AGENTS.md`](./AGENTS.md).
 zo-swarm-orchestrator/
 ├── SKILL.md                          # Skill manifest and documentation
 ├── config.json                       # Runtime configuration
-├── MODEL_GUIDE.md                    # AI model selection reference
 ├── AGENTS.md                         # Production lessons and patterns
 ├── CLAUDE.md                         # Development guide
 ├── scripts/
-│   ├── orchestrate-v4.ts             # ✅ Current orchestrator
-│   ├── orchestrate-v3.ts             # 🔄 Fallback (persistent memory)
-│   ├── orchestrate-v2.ts             # 🔄 Fallback (resilient execution)
-│   ├── orchestrate.ts                # ❌ Deprecated (v1)
+│   ├── orchestrate-v4.ts             # Main orchestrator
 │   ├── token-optimizer.ts            # Token cleaning + hierarchical memory
 │   ├── swarm-memory.ts               # SQLite persistence + inter-agent messaging
 │   ├── swarm-config.ts               # Configuration management CLI
 │   ├── swarm-status.ts               # Health/status checking
 │   ├── benchmark.ts                  # Memory strategy benchmarking
-│   ├── ab-test.ts                    # A/B testing framework
 │   ├── inter-agent-comms.ts          # Agent messaging demo
-│   ├── orchestrate-with-comms.ts     # Orchestrator + messaging demo
 │   ├── performance-test.ts           # Baseline vs enhanced performance test
-│   ├── integration-test-runner.ts    # Integration test suite
-│   └── integration-test-v2.ts        # Integration test v2
+│   └── test-orchestrator.ts          # Test suite
 ├── assets/
-│   ├── persona-registry.json         # 8 specialized personas
+│   ├── persona-registry.json         # 10 personas (8 API + 2 local executors)
 │   └── swarm-patterns.json           # 6 pre-built analysis patterns
 └── examples/
-    └── test-v4-simple.json           # Example task file
+    ├── sample-tasks.json             # Simple example
+    ├── test-v4-simple.json           # Basic v4 test
+    ├── test-5-agents-stress.json     # 5-agent stress test
+    ├── test-10-agents-stress.json    # 10-agent stress test
+    ├── test-20-agents-stress.json    # 20-agent stress test
+    └── ...                           # More analysis and workflow examples
 ```
 
 ---
@@ -371,8 +369,10 @@ zo-swarm-orchestrator/
 ## Requirements
 
 - **Runtime:** [Bun](https://bun.sh) v1.2+
-- **Platform:** [Zo Computer](https://zo.computer)
-- **Auth:** `ZO_CLIENT_IDENTITY_TOKEN` (automatically available on Zo)
+- **API backend (one of):**
+  - `ANTHROPIC_API_KEY` — direct Anthropic API (preferred)
+  - `ZO_CLIENT_IDENTITY_TOKEN` — Zo API (automatically available on [Zo Computer](https://zo.computer))
+  - Local executors only — no API key needed if all tasks use `claude-code` or `hermes` personas
 
 ---
 
