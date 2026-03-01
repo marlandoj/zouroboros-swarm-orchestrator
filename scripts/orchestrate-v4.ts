@@ -172,6 +172,28 @@ function loadConfig(): RuntimeConfig {
 }
 
 // ============================================================================
+// PATH RESOLUTION
+// ============================================================================
+
+/** Root of the zo-swarm-orchestrator repo (parent of scripts/) */
+const REPO_ROOT = join(__dirname, "..");
+
+/**
+ * Workspace root for deployment-specific resources (IDENTITY/, .zo/, SOUL.md).
+ * Override with SWARM_WORKSPACE env var; defaults to cwd.
+ */
+const WORKSPACE = process.env.SWARM_WORKSPACE || process.cwd();
+
+const PATHS = {
+  identityDir: process.env.SWARM_IDENTITY_DIR || join(WORKSPACE, "IDENTITY"),
+  soulFile: process.env.SWARM_SOUL_FILE || join(WORKSPACE, "SOUL.md"),
+  personaMemoryDir: process.env.SWARM_PERSONA_MEMORY_DIR || join(WORKSPACE, ".zo", "memory", "personas"),
+  memoryScript: process.env.SWARM_MEMORY_SCRIPT || join(WORKSPACE, ".zo", "memory", "scripts", "memory.ts"),
+  memoryDb: process.env.ZO_MEMORY_DB || join(WORKSPACE, ".zo", "memory", "shared-facts.db"),
+  agentPersonasRegistry: process.env.SWARM_AGENT_REGISTRY || join(WORKSPACE, "agency-agents-personas.json"),
+} as const;
+
+// ============================================================================
 // MEMORY INTEGRATION MODULE
 // ============================================================================
 
@@ -230,7 +252,7 @@ class MemoryManager {
     } catch {}
 
     // Fresh search if no valid cache
-    const memoryScript = "/home/workspace/.zo/memory/scripts/memory.ts";
+    const memoryScript = PATHS.memoryScript;
     let seeded = 0;
     const items: any[] = [];
 
@@ -467,9 +489,10 @@ class TokenOptimizedOrchestrator {
         const personas = registry.personas || [];
         for (const p of personas) {
           if (p.executor === "local" && p.bridge) {
+            const bridgePath = p.bridge.startsWith("/") ? p.bridge : join(WORKSPACE, p.bridge);
             this.localExecutors.set(p.id, {
               id: p.id,
-              bridge: p.bridge,
+              bridge: bridgePath,
               name: p.name || p.id,
             });
           }
@@ -1159,7 +1182,7 @@ CRITICAL RULES:
 
   private loadPersonaSystemPrompt(persona: string): string {
     // Try loading persona identity file
-    const identityPath = `/home/workspace/IDENTITY/${persona}.md`;
+    const identityPath = join(PATHS.identityDir, `${persona}.md`);
     let identity = "";
     try {
       if (existsSync(identityPath)) {
@@ -1168,7 +1191,7 @@ CRITICAL RULES:
     } catch {}
 
     // Try loading persona memory
-    const memoryPath = `/home/workspace/.zo/memory/personas/${persona}.md`;
+    const memoryPath = join(PATHS.personaMemoryDir, `${persona}.md`);
     let memory = "";
     try {
       if (existsSync(memoryPath)) {
@@ -1179,7 +1202,7 @@ CRITICAL RULES:
     // Try loading SOUL.md constitution
     let soul = "";
     try {
-      const soulPath = "/home/workspace/SOUL.md";
+      const soulPath = PATHS.soulFile;
       if (existsSync(soulPath)) {
         soul = readFileSync(soulPath, "utf-8");
       }
@@ -1321,8 +1344,8 @@ CRITICAL RULES:
   private validatePersonas(tasks: Task[]): void {
     const knownPersonas = new Set<string>();
     const knownList: string[] = [];
-    const identityDir = "/home/workspace/IDENTITY";
-    const registryPath = "/home/workspace/agency-agents-personas.json";
+    const identityDir = PATHS.identityDir;
+    const registryPath = PATHS.agentPersonasRegistry;
 
     try {
       if (existsSync(identityDir)) {
@@ -1672,7 +1695,7 @@ async function main() {
     }
 
     // 6. Persona registry check
-    const identityDir = "/home/workspace/IDENTITY";
+    const identityDir = PATHS.identityDir;
     if (existsSync(identityDir)) {
       const { readdirSync } = require("fs");
       const personas = (readdirSync(identityDir) as string[]).filter((f: string) => f.endsWith(".md"));
