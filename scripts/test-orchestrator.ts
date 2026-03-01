@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
  * Swarm Orchestrator Test Script
- * 
- * Tests v3 and v4 orchestrators to verify functionality
+ *
+ * Tests v4 orchestrator to verify functionality
  */
 
 import { exec } from "child_process";
@@ -98,13 +98,6 @@ class TestRunner {
 
 const SCRIPTS_DIR = __dirname;
 
-async function test_v3_orchestrator_exists(): Promise<void> {
-  const path = join(SCRIPTS_DIR, "orchestrate-v3.ts");
-  if (!existsSync(path)) {
-    throw new Error("orchestrate-v3.ts not found");
-  }
-}
-
 async function test_v4_orchestrator_exists(): Promise<void> {
   const path = join(SCRIPTS_DIR, "orchestrate-v4.ts");
   if (!existsSync(path)) {
@@ -123,14 +116,6 @@ async function test_benchmark_exists(): Promise<void> {
   const path = join(SCRIPTS_DIR, "benchmark.ts");
   if (!existsSync(path)) {
     throw new Error("benchmark.ts not found");
-  }
-}
-
-async function test_v3_compile(): Promise<void> {
-  try {
-    await execAsync(`cd ${SCRIPTS_DIR} && bun build orchestrate-v3.ts --target=bun --outfile=/tmp/test-v3.js`);
-  } catch (error) {
-    throw new Error(`Failed to compile v3: ${error}`);
   }
 }
 
@@ -190,7 +175,6 @@ async function main() {
   const runner = new TestRunner(true);
 
   // File existence tests
-  await runner.test("v3 orchestrator file exists", test_v3_orchestrator_exists);
   await runner.test("v4 orchestrator file exists", test_v4_orchestrator_exists);
   await runner.test("token optimizer file exists", test_token_optimizer_exists);
   await runner.test("benchmark file exists", test_benchmark_exists);
@@ -198,7 +182,6 @@ async function main() {
   console.log("\n--- Compilation Tests ---\n");
 
   // Compilation tests
-  await runner.test("v3 orchestrator compiles", test_v3_compile);
   await runner.test("v4 orchestrator compiles", test_v4_compile);
   await runner.test("benchmark compiles", test_benchmark_compile);
 

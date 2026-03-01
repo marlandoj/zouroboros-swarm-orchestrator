@@ -3,21 +3,28 @@
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-V2_SCRIPT="$SCRIPT_DIR/orchestrate-v2.ts"
 
 show_help() {
     cat << 'EOF'
-Swarm Orchestrator v2 - Resilient Multi-Agent Execution
+Swarm Orchestrator v4 - Multi-Agent Execution Engine
 
 USAGE:
-    swarm run <tasks.json> [output-dir]     Execute swarm with task file
-    swarm quick "<query>" --personas "p1,p2" Quick single-query swarm
-    swarm validate <tasks.json>              Validate task file format
-    swarm template [name]                    Generate task template
+    swarm run <tasks.json> [options]     Execute swarm with task file
+    swarm doctor                         Run health checks
+
+OPTIONS:
+    --swarm-id <id>           Unique swarm identifier
+    --strategy <type>         Memory strategy: none|sliding|hierarchical|sequential
+    --concurrency <n>         Max parallel API agents
+    --local-concurrency <n>   Max parallel local executors
+    --timeout <seconds>       Per-task timeout
+    --model <name>            Model name for API calls
+    --dag-mode <mode>         streaming|waves
+    --no-memory               Disable memory systems
 
 EXAMPLES:
-    swarm run examples/sample-tasks.json
-    swarm quick "Security audit" --personas "security-engineer,devops"
+    swarm run examples/sample-tasks.json --swarm-id my-project
+    swarm doctor
 
 EOF
 }
@@ -25,7 +32,10 @@ EOF
 case "${1:-help}" in
     run)
         shift
-        bun "$V2_SCRIPT" "$@"
+        bun "$SCRIPT_DIR/orchestrate-v4.ts" "$@"
+        ;;
+    doctor)
+        bun "$SCRIPT_DIR/orchestrate-v4.ts" doctor
         ;;
     help|--help|-h)
         show_help
