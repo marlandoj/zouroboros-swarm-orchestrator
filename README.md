@@ -33,7 +33,7 @@ This orchestrator solves all of these. It was battle-tested through [production 
 | **Execution** | DAG task dependencies | Tasks declare `dependsOn` — the engine resolves the graph and streams execution as dependencies clear |
 | | Streaming & wave modes | `streaming` (default) launches tasks immediately; `waves` waits for full dependency levels |
 | | Split concurrency | Separate limits for API agents (default: 5) and local executors (default: 4) |
-| | Local executors | Route tasks to Claude Code or Hermes via bridge scripts — no API needed |
+| | Local executors | Route tasks to Claude Code or Hermes via bridge scripts — see [`zo-swarm-executors`](../zo-swarm-executors/) |
 | | Multi-backend API | Anthropic direct, Zo API, or local-only — automatic fallback chain |
 | **Memory** | 4 memory strategies | `none`, `sliding`, `hierarchical`, `sequential` — choose per-task or globally |
 | | Token budget management | Hard caps on context size with automatic truncation and budget utilization tracking |
@@ -236,6 +236,7 @@ Three layers of configuration with clear precedence:
 | `SWARM_WORKSPACE` | Root for deployment resources (IDENTITY, SOUL.md, memory) | `/home/workspace` |
 | `SWARM_MAX_CONCURRENCY` | Max parallel API agents | `2` |
 | `SWARM_LOCAL_CONCURRENCY` | Max parallel local executors | `4` |
+| `SWARM_EXECUTOR_REGISTRY` | Path to executor registry JSON | `Skills/zo-swarm-executors/registry/executor-registry.json` |
 | `SWARM_TIMEOUT_SECONDS` | Per-task timeout | `300` |
 | `SWARM_MAX_RETRIES` | Retry attempts | `3` |
 | `SWARM_IDENTITY_DIR` | Persona identity files directory | `$SWARM_WORKSPACE/IDENTITY` |
@@ -355,7 +356,7 @@ zo-swarm-orchestrator/
 ├── assets/
 │   ├── persona-registry.json         # 10 personas (8 API + 2 local executors)
 │   └── swarm-patterns.json           # 6 pre-built analysis patterns
-└── examples/
+├── examples/
     ├── sample-tasks.json             # Simple example
     ├── test-v4-simple.json           # Basic v4 test
     ├── test-5-agents-stress.json     # 5-agent stress test
@@ -369,6 +370,7 @@ zo-swarm-orchestrator/
 ## Requirements
 
 - **Runtime:** [Bun](https://bun.sh) v1.2+
+- **Local executors:** [`zo-swarm-executors`](../zo-swarm-executors/) — bridge scripts and registry for Claude Code and Hermes
 - **API backend (one of):**
   - `ANTHROPIC_API_KEY` — direct Anthropic API (preferred)
   - `ZO_CLIENT_IDENTITY_TOKEN` — Zo API (automatically available on [Zo Computer](https://zo.computer))

@@ -145,6 +145,24 @@ sequential     386           5         0%
 
 ---
 
+## Local Executors
+
+Tasks assigned to `claude-code` or `hermes` personas are routed to **local executor bridges** instead of the API. The bridge scripts, registry, and tooling live in the companion skill [`zo-swarm-executors`](../zo-swarm-executors/):
+
+```
+Skills/zo-swarm-executors/
+├── bridges/          # claude-code-bridge.sh, hermes-bridge.sh
+├── registry/         # executor-registry.json
+├── scripts/          # doctor.ts, register.ts, test-harness.ts
+└── docs/             # BRIDGE_PROTOCOL.md, identity references
+```
+
+The orchestrator discovers executors automatically via `persona-registry.json` (entries with `"executor": "local"`). Override the executor registry path with `SWARM_EXECUTOR_REGISTRY`.
+
+See [`zo-swarm-executors/README.md`](../zo-swarm-executors/README.md) for bridge protocol, adding custom executors, and health checks.
+
+---
+
 ## Utilities
 
 ```bash
@@ -205,6 +223,7 @@ Create `config.json` in the skill root:
 | `SWARM_PERSONA_MEMORY_DIR` | Persona-specific memory files | `$SWARM_WORKSPACE/.zo/memory/personas` |
 | `SWARM_MEMORY_SCRIPT` | Memory search script path | `$SWARM_WORKSPACE/.zo/memory/scripts/memory.ts` |
 | `SWARM_AGENT_REGISTRY` | Persona registry JSON path | `$SWARM_WORKSPACE/agency-agents-personas.json` |
+| `SWARM_EXECUTOR_REGISTRY` | Local executor registry JSON path | `Skills/zo-swarm-executors/registry/executor-registry.json` |
 
 ---
 
