@@ -8,7 +8,7 @@ import { readFile, writeFile } from "fs/promises";
 import { existsSync } from "fs";
 import { join } from "path";
 
-const CONFIG_DIR = "/home/workspace/Skills/zo-swarm-orchestrator";
+const CONFIG_DIR = join(__dirname, "..");
 const CONFIG_FILE = join(CONFIG_DIR, ".swarm-config.json");
 const REGISTRY_FILE = join(CONFIG_DIR, "assets/persona-registry.json");
 

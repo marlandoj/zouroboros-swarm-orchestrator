@@ -96,7 +96,7 @@ class TestRunner {
 // ORCHESTRATOR TESTS
 // ============================================================================
 
-const SCRIPTS_DIR = "/home/workspace/Skills/zo-swarm-orchestrator/scripts";
+const SCRIPTS_DIR = __dirname;
 
 async function test_v3_orchestrator_exists(): Promise<void> {
   const path = join(SCRIPTS_DIR, "orchestrate-v3.ts");

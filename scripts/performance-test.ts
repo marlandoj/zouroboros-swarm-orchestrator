@@ -36,8 +36,9 @@ const OUTPUT_DIR = join(
   ".swarm",
   "performance-tests"
 );
-const MEMORY_SCRIPT = "/home/workspace/.zo/memory/scripts/memory.ts";
-const MEMORY_DB = "/home/workspace/.zo/memory/shared-facts.db";
+const PERF_WORKSPACE = process.env.SWARM_WORKSPACE || process.cwd();
+const MEMORY_SCRIPT = process.env.SWARM_MEMORY_SCRIPT || join(PERF_WORKSPACE, ".zo", "memory", "scripts", "memory.ts");
+const MEMORY_DB = process.env.ZO_MEMORY_DB || join(PERF_WORKSPACE, ".zo", "memory", "shared-facts.db");
 
 // Specialist roster — concise prompts for test speed
 const SPECIALISTS = [
