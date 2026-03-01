@@ -62,6 +62,7 @@ interface TaskResult {
 
 interface OrchestratorConfig {
   maxConcurrency: number;
+  localConcurrency: number;  // Separate concurrency cap for local executors (claude-code, hermes)
   timeoutSeconds: number;
   maxRetries: number;
   enableMemory: boolean;
@@ -70,6 +71,7 @@ interface OrchestratorConfig {
   crossTaskContextWindow: number;
   dagMode: "streaming" | "waves";
   memoryDbPath?: string;
+  modelName?: string;
 }
 
 interface CircuitBreaker {
@@ -84,6 +86,7 @@ interface CircuitBreaker {
 
 const DEFAULT_CONFIG: OrchestratorConfig = {
   maxConcurrency: parseInt(process.env.SWARM_MAX_CONCURRENCY || "2"),
+  localConcurrency: parseInt(process.env.SWARM_LOCAL_CONCURRENCY || "4"),
   timeoutSeconds: parseInt(process.env.SWARM_TIMEOUT_SECONDS || "300"),
   maxRetries: parseInt(process.env.SWARM_MAX_RETRIES || "3"),
   enableMemory: true,
@@ -97,6 +100,7 @@ const DEFAULT_CONFIG: OrchestratorConfig = {
   maxContextTokens: 8000,
   crossTaskContextWindow: 3,
   dagMode: "streaming",
+  modelName: process.env.SWARM_MODEL_NAME || undefined,
 };
 
 // ============================================================================
@@ -105,9 +109,11 @@ const DEFAULT_CONFIG: OrchestratorConfig = {
 
 interface RuntimeConfig {
   maxConcurrency: number;
+  localConcurrency: number;
   timeoutSeconds: number;
   maxRetries: number;
   crossTaskContextWindow: number;
+  modelName?: string;
   memory: {
     enable: boolean;
     workingMemorySize: number;
@@ -121,9 +127,11 @@ interface RuntimeConfig {
 function loadConfig(): RuntimeConfig {
   const defaults = {
     maxConcurrency: parseInt(process.env.SWARM_MAX_CONCURRENCY || "2"),
+    localConcurrency: parseInt(process.env.SWARM_LOCAL_CONCURRENCY || "4"),
     timeoutSeconds: parseInt(process.env.SWARM_TIMEOUT_SECONDS || "300"),
     maxRetries: parseInt(process.env.SWARM_MAX_RETRIES || "3"),
     crossTaskContextWindow: 3,
+    modelName: process.env.SWARM_MODEL_NAME || undefined,
     memory: {
       enable: true,
       workingMemorySize: 2,
@@ -141,9 +149,11 @@ function loadConfig(): RuntimeConfig {
       const fileConfig = JSON.parse(readFileSync(configPath, "utf-8"));
       return {
         maxConcurrency: fileConfig.maxConcurrency ?? defaults.maxConcurrency,
+        localConcurrency: fileConfig.localConcurrency ?? defaults.localConcurrency,
         timeoutSeconds: fileConfig.timeoutSeconds ?? defaults.timeoutSeconds,
         maxRetries: fileConfig.maxRetries ?? defaults.maxRetries,
         crossTaskContextWindow: fileConfig.crossTaskContextWindow ?? defaults.crossTaskContextWindow,
+        modelName: fileConfig.modelName ?? defaults.modelName,
         memory: {
           enable: fileConfig.memory?.enable ?? defaults.memory.enable,
           workingMemorySize: fileConfig.memory?.workingMemorySize ?? defaults.memory.workingMemorySize,
@@ -408,6 +418,13 @@ class NdjsonLogger {
 // ORCHESTRATOR CLASS
 // ============================================================================
 
+// Local executor configuration loaded from persona-registry.json
+interface LocalExecutor {
+  id: string;
+  bridge: string;
+  name: string;
+}
+
 class TokenOptimizedOrchestrator {
   private config: OrchestratorConfig;
   private memoryManager: MemoryManager | null = null;
@@ -418,6 +435,7 @@ class TokenOptimizedOrchestrator {
   private completedOutputs: Array<{ persona: string; category: string; summary: string }> = [];
   private logger: NdjsonLogger;
   private personaMappings: Map<string, string> = new Map();
+  private localExecutors: Map<string, LocalExecutor> = new Map();
   private progressFile: string | null = null;
   private runStartTime: number = 0;
   private totalTaskCount: number = 0;
@@ -435,6 +453,33 @@ class TokenOptimizedOrchestrator {
         this.config,
         config.memoryDbPath
       );
+    }
+
+    // Load local executors from persona registry
+    this.loadLocalExecutors();
+  }
+
+  private loadLocalExecutors(): void {
+    try {
+      const registryPath = join(__dirname, "..", "assets", "persona-registry.json");
+      if (existsSync(registryPath)) {
+        const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
+        const personas = registry.personas || [];
+        for (const p of personas) {
+          if (p.executor === "local" && p.bridge) {
+            this.localExecutors.set(p.id, {
+              id: p.id,
+              bridge: p.bridge,
+              name: p.name || p.id,
+            });
+          }
+        }
+        if (this.localExecutors.size > 0) {
+          console.log(`   Local executors: ${[...this.localExecutors.keys()].join(", ")}`);
+        }
+      }
+    } catch {
+      // Registry loading is best-effort
     }
   }
 
@@ -471,15 +516,23 @@ class TokenOptimizedOrchestrator {
     console.log(`   Swarm ID: ${this.swarmId}`);
     console.log(`   Session: ${this.sessionId}`);
     console.log(`   Tasks: ${tasks.length}`);
-    console.log(`   Concurrency: ${this.config.maxConcurrency}`);
+    const apiBackend = process.env.ANTHROPIC_API_KEY ? "Anthropic Direct" : (process.env.ZO_CLIENT_IDENTITY_TOKEN ? "Zo API" : "NONE");
+    console.log(`   API Backend: ${apiBackend}`);
+    console.log(`   API Concurrency: ${this.config.maxConcurrency}`);
+    console.log(`   Local Concurrency: ${this.config.localConcurrency}`);
     console.log(`   Max Context Tokens: ${this.config.maxContextTokens}`);
-    console.log(`   Memory Strategy: ${this.config.defaultMemoryStrategy.enableDeduplication ? "Hierarchical (optimized)" : "Basic"}\n`);
+    console.log(`   Memory Strategy: ${this.config.defaultMemoryStrategy.enableDeduplication ? "Hierarchical (optimized)" : "Basic"}`);
+    if (this.localExecutors.size > 0) {
+      console.log(`   Local Executors: ${[...this.localExecutors.keys()].join(", ")}`);
+    }
+    console.log();
 
     this.logger.log("run_start", {
       swarmId: this.swarmId,
       sessionId: this.sessionId,
       taskCount: tasks.length,
       concurrency: this.config.maxConcurrency,
+      localConcurrency: this.config.localConcurrency,
     });
 
     // Write initial progress
@@ -564,8 +617,22 @@ class TokenOptimizedOrchestrator {
     const pending = new Set(tasks.map(t => t.id));
     const executing = new Map<string, Promise<{ taskId: string; result: TaskResult }>>();
 
-    console.log(`\n🌊 DAG Streaming Execution (max concurrency: ${this.config.maxConcurrency})`);
-    this.logger.log("dag_streaming_start", { taskCount: tasks.length, maxConcurrency: this.config.maxConcurrency });
+    // Track concurrency per execution channel: Zo API vs local executors
+    let apiActive = 0;
+    let localActive = 0;
+    const executingChannel = new Map<string, "api" | "local">();
+    const totalConcurrency = this.config.maxConcurrency + this.config.localConcurrency;
+
+    console.log(`\n🌊 DAG Streaming Execution`);
+    console.log(`   Zo API concurrency: ${this.config.maxConcurrency}`);
+    console.log(`   Local executor concurrency: ${this.config.localConcurrency}`);
+    console.log(`   Effective max concurrency: ${totalConcurrency}`);
+    this.logger.log("dag_streaming_start", {
+      taskCount: tasks.length,
+      maxConcurrency: this.config.maxConcurrency,
+      localConcurrency: this.config.localConcurrency,
+      totalConcurrency,
+    });
 
     const launchReady = () => {
       // Skip failed dependencies first
@@ -589,22 +656,33 @@ class TokenOptimizedOrchestrator {
 
       // Launch tasks whose dependencies are all satisfied
       for (const id of [...pending]) {
-        if (executing.size >= this.config.maxConcurrency) break;
+        if (executing.size >= totalConcurrency) break;
         if (executing.has(id)) continue;
 
         const task = taskMap.get(id)!;
         const deps = task.dependsOn || [];
         if (!deps.every(d => completed.has(d))) continue;
 
-        // All deps met — launch immediately
+        // Check per-channel concurrency limit
+        const isLocal = this.localExecutors.has(task.persona);
+        if (isLocal && localActive >= this.config.localConcurrency) continue;
+        if (!isLocal && apiActive >= this.config.maxConcurrency) continue;
+
+        // All deps met and channel has capacity — launch immediately
         pending.delete(id);
+        const channel = isLocal ? "local" : "api";
+        if (isLocal) localActive++;
+        else apiActive++;
+        executingChannel.set(id, channel);
+
         const execution = this.executeTaskWithResilience(task).then(result => {
           return { taskId: id, result };
         });
         executing.set(id, execution);
 
-        console.log(`  ✨ [${id}] Streaming start → ${task.persona} (${executing.size}/${this.config.maxConcurrency} active)`);
-        this.logger.log("task_streaming_start", { taskId: id, persona: task.persona, activeWorkers: executing.size });
+        const channelLabel = isLocal ? "🖥️  local" : "☁️  api";
+        console.log(`  ✨ [${id}] Streaming start → ${task.persona} [${channelLabel}] (api:${apiActive}/${this.config.maxConcurrency} local:${localActive}/${this.config.localConcurrency})`);
+        this.logger.log("task_streaming_start", { taskId: id, persona: task.persona, channel, apiActive, localActive, activeWorkers: executing.size });
       }
     };
 
@@ -629,6 +707,12 @@ class TokenOptimizedOrchestrator {
       executing.delete(taskId);
       this.results.push(result);
 
+      // Decrement the correct channel counter
+      const completedChannel = executingChannel.get(taskId);
+      if (completedChannel === "local") localActive--;
+      else apiActive--;
+      executingChannel.delete(taskId);
+
       if (result.success) {
         completed.add(taskId);
         console.log(`  ✅ [${taskId}] Complete (${(result.durationMs / 1000).toFixed(1)}s) — checking for newly ready tasks`);
@@ -636,7 +720,7 @@ class TokenOptimizedOrchestrator {
         failed.add(taskId);
         console.log(`  ❌ [${taskId}] Failed: ${result.error}`);
       }
-      this.logger.log("task_streaming_complete", { taskId, success: result.success, durationMs: result.durationMs, activeWorkers: executing.size });
+      this.logger.log("task_streaming_complete", { taskId, success: result.success, durationMs: result.durationMs, channel: completedChannel, apiActive, localActive, activeWorkers: executing.size });
 
       // Immediately check if new tasks can start
       launchReady();
@@ -1011,39 +1095,180 @@ CRITICAL RULES:
   // --------------------------------------------------------------------------
 
   private async callAgent(persona: string, prompt: string): Promise<string> {
+    // Priority 1: Local executor (claude-code, hermes)
+    const localExec = this.localExecutors.get(persona);
+    if (localExec) {
+      return this.callLocalAgent(localExec, prompt);
+    }
+
+    // Priority 2: Direct Anthropic API (bypasses Zo entirely)
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+    if (anthropicKey) {
+      return this.callAnthropicDirect(persona, prompt, anthropicKey);
+    }
+
+    // Priority 3: Zo API (legacy fallback)
     const token = process.env.ZO_CLIENT_IDENTITY_TOKEN;
     if (!token) {
-      throw new Error("ZO_CLIENT_IDENTITY_TOKEN not set");
+      throw new Error("No API key found. Set ANTHROPIC_API_KEY (preferred) or ZO_CLIENT_IDENTITY_TOKEN");
     }
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.config.timeoutSeconds * 1000);
+    return this.callZoApi(persona, prompt, token);
+  }
 
-    try {
-      const response = await fetch("https://api.zo.computer/zo/ask", {
-        method: "POST",
-        headers: {
-          "authorization": token,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          input: `[Persona: ${persona}]\n\n${prompt}`,
-        }),
-        signal: controller.signal,
-      });
+  private async callAnthropicDirect(persona: string, prompt: string, apiKey: string): Promise<string> {
+    const timeoutMs = this.config.timeoutSeconds * 1000;
+    const model = process.env.SWARM_ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
 
-      clearTimeout(timeoutId);
+    // Load persona identity for system prompt
+    const systemPrompt = this.loadPersonaSystemPrompt(persona);
 
+    console.log(`  🔷 [${persona}] Direct Anthropic API → ${model}`);
+    this.logger.log("anthropic_direct_start", { persona, model });
+
+    const fetchPromise = fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 4096,
+        system: systemPrompt,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    }).then(async (response) => {
       if (!response.ok) {
-        throw new Error(`API error: ${response.status} ${response.statusText}`);
+        const err = await response.text();
+        throw new Error(`Anthropic API error: ${response.status} ${err.slice(0, 300)}`);
       }
+      const data = await response.json() as { content: Array<{ type: string; text: string }> };
+      return data.content?.map(b => b.text).join("\n") || "";
+    });
 
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`Anthropic API timeout after ${this.config.timeoutSeconds}s`)), timeoutMs);
+    });
+
+    const result = await Promise.race([fetchPromise, timeoutPromise]);
+    this.logger.log("anthropic_direct_complete", { persona, outputLength: result.length });
+    return result;
+  }
+
+  private loadPersonaSystemPrompt(persona: string): string {
+    // Try loading persona identity file
+    const identityPath = `/home/workspace/IDENTITY/${persona}.md`;
+    let identity = "";
+    try {
+      if (existsSync(identityPath)) {
+        identity = readFileSync(identityPath, "utf-8");
+      }
+    } catch {}
+
+    // Try loading persona memory
+    const memoryPath = `/home/workspace/.zo/memory/personas/${persona}.md`;
+    let memory = "";
+    try {
+      if (existsSync(memoryPath)) {
+        memory = readFileSync(memoryPath, "utf-8");
+      }
+    } catch {}
+
+    // Try loading SOUL.md constitution
+    let soul = "";
+    try {
+      const soulPath = "/home/workspace/SOUL.md";
+      if (existsSync(soulPath)) {
+        soul = readFileSync(soulPath, "utf-8");
+      }
+    } catch {}
+
+    const parts: string[] = [];
+    if (soul) parts.push(soul);
+    if (identity) parts.push(identity);
+    if (memory) parts.push(`## Persona Memory\n\n${memory}`);
+    if (parts.length === 0) {
+      parts.push(`You are a ${persona} specialist. Respond with expertise in your domain.`);
+    }
+
+    return parts.join("\n\n---\n\n");
+  }
+
+  private async callZoApi(persona: string, prompt: string, token: string): Promise<string> {
+    const timeoutMs = this.config.timeoutSeconds * 1000;
+
+    console.log(`  ☁️  [${persona}] Zo API fallback`);
+
+    const body: Record<string, any> = {
+      input: `[Persona: ${persona}]\n\n${prompt}`,
+    };
+    if (this.config.modelName) {
+      body.model_name = this.config.modelName;
+    }
+
+    const fetchPromise = fetch("https://api.zo.computer/zo/ask", {
+      method: "POST",
+      headers: {
+        "authorization": token,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }).then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`Zo API error: ${response.status} ${response.statusText}`);
+      }
       const data = await response.json();
       return data.output || "";
-    } catch (error) {
-      clearTimeout(timeoutId);
-      throw error;
+    });
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`Zo API timeout after ${this.config.timeoutSeconds}s`)), timeoutMs);
+    });
+
+    return Promise.race([fetchPromise, timeoutPromise]);
+  }
+
+  private async callLocalAgent(executor: LocalExecutor, prompt: string): Promise<string> {
+    const timeoutMs = this.config.timeoutSeconds * 1000;
+
+    if (!existsSync(executor.bridge)) {
+      throw new Error(`Local executor bridge not found: ${executor.bridge}`);
     }
+
+    console.log(`  🖥️  [${executor.id}] Routing to local executor: ${executor.name}`);
+    this.logger.log("local_executor_start", { executor: executor.id, bridge: executor.bridge });
+
+    const proc = Bun.spawn(["bash", executor.bridge, prompt], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env },
+    });
+
+    const execPromise = (async () => {
+      // Read stdout and stderr concurrently to avoid deadlock
+      const [output, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      if (exitCode !== 0) {
+        throw new Error(`Local executor ${executor.id} exited with code ${exitCode}: ${stderr.slice(0, 500)}`);
+      }
+      return output.trim();
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        proc.kill();
+        reject(new Error(`Local executor ${executor.id} timed out after ${this.config.timeoutSeconds}s`));
+      }, timeoutMs);
+    });
+
+    const result = await Promise.race([execPromise, timeoutPromise]);
+    this.logger.log("local_executor_complete", { executor: executor.id, outputLength: result.length });
+    return result;
   }
 
   // --------------------------------------------------------------------------
@@ -1138,6 +1363,9 @@ CRITICAL RULES:
     const uniqueKnown = [...new Set(knownList)];
 
     for (const task of tasks) {
+      // Skip fuzzy matching for local executor personas — they're invoked by exact ID
+      if (this.localExecutors.has(task.persona)) continue;
+
       if (!knownPersonas.has(task.persona)) {
         const match = this.fuzzyMatchPersona(task.persona, uniqueKnown);
         if (match) {
@@ -1376,6 +1604,7 @@ async function main() {
     console.log("  --concurrency <n>     Max concurrent tasks (default: 2)");
     console.log("  --timeout <seconds>   Task timeout in seconds (default: 300)");
     console.log("  --dag-mode <mode>     DAG execution mode: streaming|waves (default: streaming)");
+    console.log("  --model <name>        Model name for API calls (default: from env)");
   };
 
   if (args.length < 1 || args[0] === "--help" || args[0] === "-h") {
@@ -1472,6 +1701,7 @@ async function main() {
   };
   let maxTokens = fileConfig.memory.maxTokens;
   let concurrency = fileConfig.maxConcurrency;
+  let localConcurrency = fileConfig.localConcurrency;
   let timeoutSeconds = fileConfig.timeoutSeconds;
   let dagMode: "streaming" | "waves" = "streaming";
 
@@ -1498,11 +1728,17 @@ async function main() {
       case "--concurrency":
         concurrency = parseInt(args[++i]);
         break;
+      case "--local-concurrency":
+        localConcurrency = parseInt(args[++i]);
+        break;
       case "--timeout":
         timeoutSeconds = parseInt(args[++i]);
         break;
       case "--dag-mode":
         dagMode = args[++i] as "streaming" | "waves";
+        break;
+      case "--model":
+        fileConfig.modelName = args[++i];
         break;
     }
   }
@@ -1526,9 +1762,11 @@ async function main() {
     defaultMemoryStrategy: strategy,
     maxContextTokens: maxTokens,
     maxConcurrency: concurrency,
+    localConcurrency,
     timeoutSeconds,
     maxRetries: fileConfig.maxRetries,
     dagMode,
+    modelName: fileConfig.modelName,
   });
 
   try {

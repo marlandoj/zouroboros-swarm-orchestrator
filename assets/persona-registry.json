@@ -47,6 +47,22 @@
       "name": "Technical Writer",
       "expertise": ["documentation", "API docs", "user guides", "content strategy"],
       "best_for": ["docs review", "README writing", "API documentation", "knowledge base"]
+    },
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "expertise": ["software engineering", "code implementation", "bug fixing", "refactoring", "testing", "code review"],
+      "best_for": ["feature implementation", "codebase refactoring", "test writing", "bug diagnosis", "PR review", "architecture analysis"],
+      "executor": "local",
+      "bridge": "/home/workspace/claude-code-bridge.sh"
+    },
+    {
+      "id": "hermes",
+      "name": "Hermes Agent",
+      "expertise": ["autonomous research", "multi-tool investigation", "web scraping", "long-running tasks"],
+      "best_for": ["deep research", "autonomous investigation", "web data gathering", "multi-step analysis"],
+      "executor": "local",
+      "bridge": "/home/workspace/hermes-agent/hermes-bridge.sh"
     }
   ]
 }
