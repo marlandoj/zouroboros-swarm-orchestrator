@@ -180,9 +180,9 @@ const REPO_ROOT = join(__dirname, "..");
 
 /**
  * Workspace root for deployment-specific resources (IDENTITY/, .zo/, SOUL.md).
- * Override with SWARM_WORKSPACE env var; defaults to cwd.
+ * Override with SWARM_WORKSPACE env var; defaults to /home/workspace (Zo Computer root).
  */
-const WORKSPACE = process.env.SWARM_WORKSPACE || process.cwd();
+const WORKSPACE = process.env.SWARM_WORKSPACE || "/home/workspace";
 
 const PATHS = {
   identityDir: process.env.SWARM_IDENTITY_DIR || join(WORKSPACE, "IDENTITY"),

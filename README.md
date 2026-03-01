@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-4.1.0-blue?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-4.2.0-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/runtime-Bun-f472b6?style=flat-square&logo=bun" alt="Bun" />
   <img src="https://img.shields.io/badge/platform-Zo_Computer-black?style=flat-square" alt="Zo Computer" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
@@ -233,7 +233,7 @@ Three layers of configuration with clear precedence:
 |----------|-------------|---------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (preferred backend) | — |
 | `ZO_CLIENT_IDENTITY_TOKEN` | Zo API authentication (fallback) | — |
-| `SWARM_WORKSPACE` | Root for deployment resources (IDENTITY, SOUL.md, memory) | `cwd()` |
+| `SWARM_WORKSPACE` | Root for deployment resources (IDENTITY, SOUL.md, memory) | `/home/workspace` |
 | `SWARM_MAX_CONCURRENCY` | Max parallel API agents | `2` |
 | `SWARM_LOCAL_CONCURRENCY` | Max parallel local executors | `4` |
 | `SWARM_TIMEOUT_SECONDS` | Per-task timeout | `300` |

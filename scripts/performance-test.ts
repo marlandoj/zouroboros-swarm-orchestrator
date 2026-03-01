@@ -36,7 +36,7 @@ const OUTPUT_DIR = join(
   ".swarm",
   "performance-tests"
 );
-const PERF_WORKSPACE = process.env.SWARM_WORKSPACE || process.cwd();
+const PERF_WORKSPACE = process.env.SWARM_WORKSPACE || "/home/workspace";
 const MEMORY_SCRIPT = process.env.SWARM_MEMORY_SCRIPT || join(PERF_WORKSPACE, ".zo", "memory", "scripts", "memory.ts");
 const MEMORY_DB = process.env.ZO_MEMORY_DB || join(PERF_WORKSPACE, ".zo", "memory", "shared-facts.db");
 

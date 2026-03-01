@@ -195,11 +195,16 @@ Create `config.json` in the skill root:
 |----------|-------------|---------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (preferred) | — |
 | `ZO_CLIENT_IDENTITY_TOKEN` | Zo API auth (fallback) | — |
-| `SWARM_WORKSPACE` | Root for deployment resources | `cwd()` |
+| `SWARM_WORKSPACE` | Root for deployment resources | `/home/workspace` |
 | `SWARM_MAX_CONCURRENCY` | Max parallel API agents | 2 |
 | `SWARM_LOCAL_CONCURRENCY` | Max parallel local executors | 4 |
 | `SWARM_TIMEOUT_SECONDS` | Per-task timeout | 300 |
 | `SWARM_MAX_RETRIES` | Retry attempts | 3 |
+| `SWARM_IDENTITY_DIR` | Persona identity files directory | `$SWARM_WORKSPACE/IDENTITY` |
+| `SWARM_SOUL_FILE` | Path to constitution file | `$SWARM_WORKSPACE/SOUL.md` |
+| `SWARM_PERSONA_MEMORY_DIR` | Persona-specific memory files | `$SWARM_WORKSPACE/.zo/memory/personas` |
+| `SWARM_MEMORY_SCRIPT` | Memory search script path | `$SWARM_WORKSPACE/.zo/memory/scripts/memory.ts` |
+| `SWARM_AGENT_REGISTRY` | Persona registry JSON path | `$SWARM_WORKSPACE/agency-agents-personas.json` |
 
 ---
 
