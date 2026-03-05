@@ -63,6 +63,22 @@
       "best_for": ["deep research", "autonomous investigation", "web data gathering", "multi-step analysis"],
       "executor": "local",
       "bridge": "Skills/zo-swarm-executors/bridges/hermes-bridge.sh"
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini CLI",
+      "expertise": ["code generation", "reasoning", "multimodal analysis", "large-context processing", "code review", "research"],
+      "best_for": ["large-context code analysis", "multimodal tasks", "alternative perspective review", "cross-validation", "rapid prototyping"],
+      "executor": "local",
+      "bridge": "Skills/zo-swarm-executors/bridges/gemini-bridge.sh"
+    },
+    {
+      "id": "codex",
+      "name": "Codex CLI",
+      "expertise": ["code generation", "shell commands", "file editing", "debugging", "rapid prototyping", "code review"],
+      "best_for": ["fast code tasks", "shell automation", "quick analysis", "rapid iteration", "speed-critical swarm tasks"],
+      "executor": "local",
+      "bridge": "Skills/zo-swarm-executors/bridges/codex-bridge.sh"
     }
   ]
 }

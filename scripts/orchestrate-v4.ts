@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Swarm Orchestrator v4.0.0 - Enhanced Token Optimizer
+ * Swarm Orchestrator v4.3.0 - Hivemind Routing
  * 
  * Building on v3's persistent memory, v4 adds:
  * - Token optimization (HTML stripping, normalization, deduplication)
@@ -9,6 +9,18 @@
  * - Token budget management
  * - Multiple memory strategies
  * 
+ * v4.2 adds:
+ * - Composite router (4-signal weighted scoring: capability, health, complexity fit, history)
+ * - Retry-with-reroute (on failure, demote executor and try next-best)
+ * - Persistent executor history with time/count decay
+ * - Routing strategy presets (fast, reliable, balanced, explore)
+ *
+ * v4.3 "Hivemind Routing" adds:
+ * - Semantic synonym expansion in capability matching (22 synonym clusters)
+ * - Flattened complexity affinity matrix for fairer executor distribution
+ * - Expanded executor expertise keywords for hermes and gemini
+ * - All 4 executors now get meaningful routing opportunities
+ *
  * Inspired by:
  * - prompt-refiner: Schema/Response compression
  * - Agent-Memory-Playground: 9 memory strategies
@@ -18,7 +30,7 @@ import { SwarmMemory, getSwarmMemory, ContextAccessMode, MemoryQuery } from "./s
 import { HierarchicalMemory, SlidingWindowMemory, MemoryItem, MemoryStrategy } from "./token-optimizer";
 import { setInterval, clearInterval } from "timers";
 import { join } from "path";
-import { existsSync, readFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, unlinkSync } from "fs";
 
 // ============================================================================
 // TYPES
@@ -48,6 +60,15 @@ interface Task {
     priority?: PriorityQueue;
     tags?: string[];
   };
+
+  // R2: Per-task timeout override (falls back to config.timeoutSeconds if not set)
+  timeoutSeconds?: number;
+
+  // R3: Expected file mutations — verified after task completion
+  expectedMutations?: Array<{
+    file: string;
+    contains: string;
+  }>;
 }
 
 interface TaskResult {
@@ -72,12 +93,177 @@ interface OrchestratorConfig {
   dagMode: "streaming" | "waves";
   memoryDbPath?: string;
   modelName?: string;
+  // R5: Async completion notification channel (none = file only, sms = SMS, email = email)
+  notifyOnComplete?: "none" | "sms" | "email";
+  // v4.2: Composite routing strategy
+  routingStrategy?: RoutingStrategy;
 }
 
 interface CircuitBreaker {
   failures: number;
   lastFailure: number;
   isOpen: boolean;
+}
+
+// ============================================================================
+// COMPOSITE ROUTER TYPES & HELPERS (v4.2)
+// ============================================================================
+
+type ComplexityTier = "trivial" | "simple" | "moderate" | "complex";
+
+interface ComplexityEstimate {
+  tier: ComplexityTier;
+  signals: {
+    wordCount: number;
+    fileCount: number;
+    hasMultiStep: boolean;
+    hasTool: boolean;
+    hasAnalysis: boolean;
+  };
+}
+
+interface CapabilityScore {
+  raw: number;
+  normalized: number;
+  matches: string[];
+}
+
+interface RouteDecision {
+  executorId: string;
+  executorName: string;
+  compositeScore: number;
+  breakdown: {
+    capability: number;
+    health: number;
+    complexityFit: number;
+    history: number;
+  };
+  method: "composite" | "fallback";
+}
+
+interface RouterWeights {
+  capability: number;
+  health: number;
+  complexityFit: number;
+  history: number;
+}
+
+type RoutingStrategy = "fast" | "reliable" | "balanced" | "explore";
+
+const STRATEGY_WEIGHTS: Record<RoutingStrategy, RouterWeights> = {
+  fast:     { capability: 0.15, health: 0.25, complexityFit: 0.45, history: 0.15 },
+  reliable: { capability: 0.20, health: 0.45, complexityFit: 0.15, history: 0.20 },
+  balanced: { capability: 0.30, health: 0.35, complexityFit: 0.20, history: 0.15 },
+  explore:  { capability: 0.40, health: 0.20, complexityFit: 0.20, history: 0.20 },
+};
+
+const COMPLEXITY_AFFINITY: Record<string, Record<ComplexityTier, number>> = {
+  "codex":       { trivial: 0.90, simple: 0.85, moderate: 0.55, complex: 0.30 },
+  "gemini":      { trivial: 0.75, simple: 0.80, moderate: 0.90, complex: 0.85 },
+  "hermes":      { trivial: 0.70, simple: 0.75, moderate: 0.85, complex: 0.80 },
+  "claude-code": { trivial: 0.65, simple: 0.75, moderate: 0.90, complex: 1.00 },
+};
+
+function estimateComplexity(task: Task): ComplexityEstimate {
+  const text = task.task.toLowerCase();
+  const words = text.split(/\s+/).length;
+  const fileRefs = (text.match(/\/[\w\-./]+\.\w+/g) || []).length;
+  const hasMultiStep = /\b(then|after that|next|step \d|finally|first|second|third)\b/.test(text)
+    || (text.match(/\d+\.\s/g) || []).length >= 2;
+  const hasTool = /\b(git|npm|bun|pip|curl|sed|grep|mkdir|chmod|docker)\b/.test(text);
+  const hasAnalysis = /\b(analy[zs]e|review|audit|compare|evaluate|assess|inspect)\b/.test(text);
+
+  const score = (words > 200 ? 1 : 0) + (fileRefs > 3 ? 1 : 0)
+    + (hasMultiStep ? 1 : 0) + (hasTool ? 1 : 0) + (hasAnalysis ? 1 : 0);
+
+  let tier: ComplexityTier;
+  if (score <= 1) tier = "trivial";
+  else if (score <= 2) tier = "simple";
+  else if (score <= 3) tier = "moderate";
+  else tier = "complex";
+
+  return { tier, signals: { wordCount: words, fileCount: fileRefs, hasMultiStep, hasTool, hasAnalysis } };
+}
+
+function complexityFitScore(executorId: string, complexity: ComplexityTier): number {
+  return COMPLEXITY_AFFINITY[executorId]?.[complexity] ?? 0.5;
+}
+
+// ============================================================================
+// EXECUTOR HISTORY PERSISTENCE (v4.2)
+// ============================================================================
+
+interface ExecutorHistoryEntry {
+  attempts: number;
+  successes: number;
+  avgDurationMs: number;
+  lastUpdated: number;
+}
+
+type ExecutorHistory = Record<string, ExecutorHistoryEntry>;
+
+const HISTORY_DECAY_THRESHOLD = 50;
+const HISTORY_TIME_DECAY_MS = 7 * 24 * 60 * 60 * 1000;  // 7 days
+const HISTORY_TIME_ZERO_MS = 30 * 24 * 60 * 60 * 1000;  // 30 days
+
+function getHistoryPath(): string {
+  return join(process.env.HOME || "/tmp", ".swarm", "executor-history.json");
+}
+
+function loadHistory(): ExecutorHistory {
+  try {
+    const path = getHistoryPath();
+    if (existsSync(path)) {
+      const raw = JSON.parse(readFileSync(path, "utf-8"));
+      const now = Date.now();
+      for (const [key, entry] of Object.entries(raw) as [string, ExecutorHistoryEntry][]) {
+        if (now - entry.lastUpdated > HISTORY_TIME_ZERO_MS) {
+          delete raw[key];
+        } else if (now - entry.lastUpdated > HISTORY_TIME_DECAY_MS) {
+          entry.attempts = Math.ceil(entry.attempts / 2);
+          entry.successes = Math.ceil(entry.successes / 2);
+        }
+      }
+      return raw;
+    }
+  } catch {}
+  return {};
+}
+
+function saveHistory(history: ExecutorHistory): void {
+  try {
+    const path = getHistoryPath();
+    const dir = join(process.env.HOME || "/tmp", ".swarm");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(path, JSON.stringify(history, null, 2));
+  } catch {}
+}
+
+function historyScore(executorId: string, category: string): number {
+  const history = loadHistory();
+  const key = `${executorId}:${category}`;
+  const entry = history[key];
+  if (!entry || entry.attempts < 3) return 0.5;
+  return entry.successes / entry.attempts;
+}
+
+function recordOutcome(executorId: string, category: string, success: boolean, durationMs: number): void {
+  const history = loadHistory();
+  const key = `${executorId}:${category}`;
+  const entry = history[key] || { attempts: 0, successes: 0, avgDurationMs: 0, lastUpdated: 0 };
+
+  entry.attempts++;
+  if (success) entry.successes++;
+  entry.avgDurationMs = (entry.avgDurationMs * (entry.attempts - 1) + durationMs) / entry.attempts;
+  entry.lastUpdated = Date.now();
+
+  if (entry.attempts > HISTORY_DECAY_THRESHOLD) {
+    entry.attempts = Math.ceil(entry.attempts / 2);
+    entry.successes = Math.ceil(entry.successes / 2);
+  }
+
+  history[key] = entry;
+  saveHistory(history);
 }
 
 // ============================================================================
@@ -101,6 +287,7 @@ const DEFAULT_CONFIG: OrchestratorConfig = {
   crossTaskContextWindow: 3,
   dagMode: "streaming",
   modelName: process.env.SWARM_MODEL_NAME || undefined,
+  routingStrategy: (process.env.SWARM_ROUTING_STRATEGY as RoutingStrategy) || "balanced",
 };
 
 // ============================================================================
@@ -191,6 +378,7 @@ const PATHS = {
   memoryScript: process.env.SWARM_MEMORY_SCRIPT || join(WORKSPACE, ".zo", "memory", "scripts", "memory.ts"),
   memoryDb: process.env.ZO_MEMORY_DB || join(WORKSPACE, ".zo", "memory", "shared-facts.db"),
   agentPersonasRegistry: process.env.SWARM_AGENT_REGISTRY || join(WORKSPACE, "agency-agents-personas.json"),
+  executorRegistry: process.env.SWARM_EXECUTOR_REGISTRY || join(WORKSPACE, "Skills", "zo-swarm-executors", "registry", "executor-registry.json"),
 } as const;
 
 // ============================================================================
@@ -319,7 +507,7 @@ class MemoryManager {
       }
       const cacheFile = join(this.cacheDir, `${cacheKey}.json`);
       const cacheData = { items, timestamp: Date.now() };
-      Bun.write(cacheFile, JSON.stringify(cacheData, null, 2));
+      writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2));
       this.preWarmCache.set(cacheKey, cacheData);
     } catch (err) {
       console.log(`  [pre-warm] Failed to save cache: ${err}`);
@@ -428,7 +616,7 @@ class NdjsonLogger {
   async flush(): Promise<string | null> {
     if (!this.logPath || this.lines.length === 0) return null;
     try {
-      await Bun.write(this.logPath, this.lines.join("\n") + "\n");
+      await writeFileSync(this.logPath, this.lines.join("\n") + "\n");
       return this.logPath;
     } catch {
       return null;
@@ -447,6 +635,15 @@ interface LocalExecutor {
   name: string;
 }
 
+// Capability profile for auto-routing (loaded from executor-registry.json + persona-registry.json)
+interface ExecutorCapability {
+  id: string;
+  name: string;
+  expertise: string[];    // e.g. ["code-generation", "web-research"]
+  bestFor: string[];      // e.g. ["Complex multi-file code changes", "Web research"]
+  isLocal: boolean;
+}
+
 class TokenOptimizedOrchestrator {
   private config: OrchestratorConfig;
   private memoryManager: MemoryManager | null = null;
@@ -458,6 +655,7 @@ class TokenOptimizedOrchestrator {
   private logger: NdjsonLogger;
   private personaMappings: Map<string, string> = new Map();
   private localExecutors: Map<string, LocalExecutor> = new Map();
+  private executorCapabilities: Map<string, ExecutorCapability> = new Map();
   private progressFile: string | null = null;
   private runStartTime: number = 0;
   private totalTaskCount: number = 0;
@@ -488,12 +686,23 @@ class TokenOptimizedOrchestrator {
         const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
         const personas = registry.personas || [];
         for (const p of personas) {
+          // Register local executor bridge
           if (p.executor === "local" && p.bridge) {
             const bridgePath = p.bridge.startsWith("/") ? p.bridge : join(WORKSPACE, p.bridge);
             this.localExecutors.set(p.id, {
               id: p.id,
               bridge: bridgePath,
               name: p.name || p.id,
+            });
+          }
+          // Register capability profile for all personas (local and API)
+          if (p.expertise || p.best_for) {
+            this.executorCapabilities.set(p.id, {
+              id: p.id,
+              name: p.name || p.id,
+              expertise: p.expertise || [],
+              bestFor: p.best_for || [],
+              isLocal: p.executor === "local",
             });
           }
         }
@@ -503,6 +712,39 @@ class TokenOptimizedOrchestrator {
       }
     } catch {
       // Registry loading is best-effort
+    }
+
+    // Enrich capabilities from executor-registry.json (has more detailed expertise/best_for)
+    try {
+      if (existsSync(PATHS.executorRegistry)) {
+        const execRegistry = JSON.parse(readFileSync(PATHS.executorRegistry, "utf-8"));
+        const executors = execRegistry.executors || [];
+        for (const ex of executors) {
+          if (!ex.id) continue;
+          const existing = this.executorCapabilities.get(ex.id);
+          if (existing) {
+            // Merge: executor-registry data supplements persona-registry data
+            const mergedExpertise = new Set([...existing.expertise, ...(ex.expertise || [])]);
+            const mergedBestFor = new Set([...existing.bestFor, ...(ex.best_for || [])]);
+            existing.expertise = [...mergedExpertise];
+            existing.bestFor = [...mergedBestFor];
+          } else if (ex.expertise || ex.best_for) {
+            this.executorCapabilities.set(ex.id, {
+              id: ex.id,
+              name: ex.name || ex.id,
+              expertise: ex.expertise || [],
+              bestFor: ex.best_for || [],
+              isLocal: ex.executor === "local",
+            });
+          }
+        }
+      }
+    } catch {
+      // Executor registry enrichment is best-effort
+    }
+
+    if (this.executorCapabilities.size > 0) {
+      console.log(`   Auto-route capable: ${[...this.executorCapabilities.keys()].join(", ")}`);
     }
   }
 
@@ -522,7 +764,7 @@ class TokenOptimizedOrchestrator {
         personaMappings: Object.fromEntries(this.personaMappings),
         ...extra,
       };
-      Bun.write(this.progressFile, JSON.stringify(progress, null, 2));
+      writeFileSync(this.progressFile, JSON.stringify(progress, null, 2));
     } catch {}
   }
 
@@ -530,12 +772,122 @@ class TokenOptimizedOrchestrator {
   // MAIN EXECUTION
   // --------------------------------------------------------------------------
 
-  async run(tasks: Task[]): Promise<TaskResult[]> {
+  // R1: Startup Health Check — validate prerequisites before entering DAG loop
+  private async preflight(tasks: Task[]): Promise<{ ok: boolean; errors: string[] }> {
+    const errors: string[] = [];
+
+    // 1. Validate campaign JSON structure
+    for (const task of tasks) {
+      if (!task.id || !task.persona || !task.task) {
+        errors.push(`Invalid task: missing required fields (id=${task.id}, persona=${task.persona})`);
+      }
+    }
+
+    // 2. Check for duplicate task IDs
+    const ids = tasks.map(t => t.id);
+    const dupes = ids.filter((id, i) => ids.indexOf(id) !== i);
+    if (dupes.length > 0) {
+      errors.push(`Duplicate task IDs: ${[...new Set(dupes)].join(", ")}`);
+    }
+
+    // 3. Verify local executor bridges exist and are executable
+    for (const task of tasks) {
+      const executor = this.localExecutors.get(task.persona);
+      if (executor) {
+        if (!existsSync(executor.bridge)) {
+          errors.push(`Local executor bridge not found: ${executor.bridge} (persona: ${task.persona})`);
+        }
+      }
+    }
+
+    // 4. Verify API credentials exist
+    const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY;
+    const hasZoToken = !!process.env.ZO_CLIENT_IDENTITY_TOKEN;
+    const needsApi = tasks.some(t => !this.localExecutors.has(t.persona));
+    if (needsApi && !hasAnthropicKey && !hasZoToken) {
+      errors.push("No API credentials found (need ANTHROPIC_API_KEY or ZO_CLIENT_IDENTITY_TOKEN) but tasks require API execution");
+    }
+
+    // 5. Verify DAG dependency references are valid
+    const taskIds = new Set(tasks.map(t => t.id));
+    for (const task of tasks) {
+      for (const dep of task.dependsOn || []) {
+        if (!taskIds.has(dep)) {
+          errors.push(`Task ${task.id} depends on unknown task: ${dep}`);
+        }
+      }
+    }
+
+    // 6. Check for dependency cycles (simple DFS)
+    const visited = new Set<string>();
+    const inStack = new Set<string>();
+    const taskMap = new Map(tasks.map(t => [t.id, t]));
+    const hasCycle = (id: string): boolean => {
+      if (inStack.has(id)) return true;
+      if (visited.has(id)) return false;
+      visited.add(id);
+      inStack.add(id);
+      const task = taskMap.get(id);
+      for (const dep of task?.dependsOn || []) {
+        if (hasCycle(dep)) return true;
+      }
+      inStack.delete(id);
+      return false;
+    };
+    for (const task of tasks) {
+      visited.clear();
+      inStack.clear();
+      if (hasCycle(task.id)) {
+        errors.push(`Dependency cycle detected involving task: ${task.id}`);
+        break;
+      }
+    }
+
+    // 7. Test memory system connectivity (best-effort)
+    if (this.config.enableMemory && this.memoryManager) {
+      try {
+        const stats = this.memoryManager.getStats();
+        if (!stats) {
+          errors.push("Memory system returned null stats — may not be initialized");
+        }
+      } catch (e) {
+        errors.push(`Memory system error: ${e}`);
+      }
+    }
+
+    return { ok: errors.length === 0, errors };
+  }
+
+    async run(tasks: Task[]): Promise<TaskResult[]> {
     const startTime = Date.now();
     this.runStartTime = startTime;
     this.totalTaskCount = tasks.length;
 
-    console.log(`\n🐝 Swarm Orchestrator v4.0.0 - Token Optimizer`);
+    // R1: Campaign Locking — prevent duplicate concurrent runs
+    const lockPath = `/dev/shm/${this.swarmId}.lock`;
+    const STALE_LOCK_MS = 30 * 60 * 1000; // 30 minutes
+    if (existsSync(lockPath)) {
+      try {
+        const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+        if (Date.now() - lock.ts < STALE_LOCK_MS) {
+          const msg = `Campaign ${this.swarmId} already running (PID ${lock.pid}, started ${new Date(lock.ts).toISOString()})`;
+          console.error(`\n🔒 ${msg}`);
+          this.logger.log("campaign_lock_rejected", { swarmId: this.swarmId, existingPid: lock.pid, existingTs: lock.ts });
+          throw new Error(msg);
+        }
+        console.log(`  🔓 Stale lock found (>${STALE_LOCK_MS / 60000}m old), overriding`);
+        this.logger.log("campaign_lock_stale_override", { swarmId: this.swarmId, stalePid: lock.pid });
+      } catch (e) {
+        if ((e as Error).message?.includes("already running")) throw e;
+        // Corrupt lock file — override it
+      }
+    }
+    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), swarmId: this.swarmId }));
+    this.logger.log("campaign_lock_acquired", { swarmId: this.swarmId, pid: process.pid });
+
+    try {
+
+    console.log(`\n🐝 Swarm Orchestrator v4.3.0 - Hivemind Routing`);
     console.log(`   Swarm ID: ${this.swarmId}`);
     console.log(`   Session: ${this.sessionId}`);
     console.log(`   Tasks: ${tasks.length}`);
@@ -563,6 +915,20 @@ class TokenOptimizedOrchestrator {
 
     // Validate personas
     this.validatePersonas(tasks);
+
+    // R4: Startup health check — validate prerequisites before DAG execution
+    const preflight = await this.preflight(tasks);
+    if (!preflight.ok) {
+      console.error(`\n❌ Preflight check failed:`);
+      for (const err of preflight.errors) {
+        console.error(`   • ${err}`);
+      }
+      this.logger.log("preflight_failed", { errors: preflight.errors });
+      this.writeProgress({ status: "preflight_failed", errors: preflight.errors });
+      throw new Error(`Preflight failed: ${preflight.errors.length} error(s) — ${preflight.errors[0]}`);
+    }
+    console.log(`   ✓ Preflight passed (${tasks.length} tasks validated)`);
+    this.logger.log("preflight_passed", { taskCount: tasks.length });
 
     // R3: Pre-warm memory with domain-relevant facts
     if (this.memoryManager) {
@@ -607,6 +973,10 @@ class TokenOptimizedOrchestrator {
     // Final summary
     await this.printSummary(Date.now() - startTime);
 
+    // R5: Async completion notification
+    this.writeCompletionFile(Date.now() - startTime);
+    await this.sendCompletionNotification(Date.now() - startTime);
+
     this.logger.log("run_complete", {
       totalTasks: this.results.length,
       successful: this.results.filter(r => r.success).length,
@@ -617,6 +987,12 @@ class TokenOptimizedOrchestrator {
     if (logPath) console.log(`📋 Logs saved to: ${logPath}`);
 
     return this.results;
+
+    } finally {
+      // R1: Release campaign lock
+      try { unlinkSync(lockPath); } catch {}
+      this.logger.log("campaign_lock_released", { swarmId: this.swarmId });
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -830,39 +1206,86 @@ class TokenOptimizedOrchestrator {
   private async executeTaskWithResilience(task: Task): Promise<TaskResult> {
     const startTime = Date.now();
     let retries = 0;
-
-    // Check circuit breaker
-    if (this.isCircuitOpen(task.persona)) {
-      console.log(`  ⚠️  [${task.id}] Circuit open for ${task.persona}, skipping`);
-      return {
-        task,
-        success: false,
-        error: "Circuit breaker open",
-        durationMs: 0,
-        retries,
-      };
-    }
-
-    // Build optimized prompt
-    const prompt = await this.buildOptimizedPrompt(task);
-    const promptTokens = this.estimateTokens(prompt);
+    const triedExecutors = new Set<string>();
+    const category = task.memoryMetadata?.category || "general";
+    const originalPersona = task.persona;
 
     while (retries <= this.config.maxRetries) {
-      try {
-        console.log(`  🚀 [${task.id}] ${task.persona} (attempt ${retries + 1}) ~${promptTokens} tokens`);
-        this.logger.log("task_start", { taskId: task.id, persona: task.persona, attempt: retries + 1, promptTokens });
+      // --- Executor selection (v4.2 retry-with-reroute) ---
+      let executorId: string;
+      if (originalPersona !== "auto" && retries === 0) {
+        // Explicit persona specified — honor it on first attempt
+        executorId = originalPersona;
+      } else {
+        // Auto-route or reroute after failure
+        const decision = this.compositeRoute(task, triedExecutors.size > 0 ? triedExecutors : undefined);
+        executorId = decision.executorId;
 
-        const output = await this.callAgent(task.persona, prompt);
+        // If compositeRoute returned a tried executor (all others exhausted), accept it
+        if (triedExecutors.has(executorId)) {
+          const alternatives = this.getAllRouteCandidates(task, triedExecutors)
+            .filter(c => !triedExecutors.has(c.executorId) && c.compositeScore > 0.1);
+          if (alternatives.length > 0) {
+            executorId = alternatives[0].executorId;
+            console.log(`  🔄 [${task.id}] Rerouting away from tried executors → ${executorId}`);
+          }
+          // else: no untried alternatives, retry same executor (better than nothing)
+        }
+      }
+
+      triedExecutors.add(executorId);
+
+      // Check circuit breaker for the selected executor
+      if (this.isCircuitOpen(executorId)) {
+        console.log(`  ⚠️  [${task.id}] Circuit open for ${executorId}, trying next candidate`);
+        retries++;
+        if (retries <= this.config.maxRetries) continue;
+        return {
+          task,
+          success: false,
+          error: `Circuit breaker open for all tried executors: ${[...triedExecutors].join(", ")}`,
+          durationMs: Date.now() - startTime,
+          retries: retries - 1,
+        };
+      }
+
+      // Temporarily set task.persona for callAgent dispatch and prompt building
+      task.persona = executorId;
+
+      // Build optimized prompt (inside loop — executor may change on reroute)
+      const prompt = await this.buildOptimizedPrompt(task);
+      const promptTokens = this.estimateTokens(prompt);
+
+      try {
+        console.log(`  🚀 [${task.id}] ${executorId} (attempt ${retries + 1}) ~${promptTokens} tokens`);
+        this.logger.log("task_start", { taskId: task.id, persona: executorId, attempt: retries + 1, promptTokens });
+
+        const output = await this.callAgent(executorId, prompt, task.timeoutSeconds);
         const outputTokens = this.estimateTokens(output);
 
-        // Record success
-        this.recordSuccess(task.persona);
-        this.logger.log("task_success", { taskId: task.id, persona: task.persona, durationMs: Date.now() - startTime, outputTokens });
+        // R3: Post-mutation verification — check expected file changes were applied
+        const { verified, failures: mutationFailures } = this.verifyMutations(task);
+        if (!verified) {
+          const failMsg = `Mutation verification failed: ${mutationFailures.join("; ")}`;
+          console.log(`  ⚠️  [${task.id}] ${failMsg}`);
+          this.logger.log("mutation_verification_failed", { taskId: task.id, failures: mutationFailures });
+          // Throw to enter catch block for retry-with-reroute
+          throw new Error(failMsg);
+        }
+        if (task.expectedMutations?.length) {
+          console.log(`  ✓ [${task.id}] Mutation verification passed (${task.expectedMutations.length} checks)`);
+          this.logger.log("mutation_verification_passed", { taskId: task.id, checks: task.expectedMutations.length });
+        }
+
+        // Record success (circuit breaker + history)
+        this.recordSuccess(executorId);
+        recordOutcome(executorId, category, true, Date.now() - startTime);
+        this.logger.log("task_success", { taskId: task.id, persona: executorId, durationMs: Date.now() - startTime, outputTokens });
 
         // Save to memory with token optimization
         if (this.memoryManager) {
           this.memoryManager.addAgentOutput(
-            task.persona,
+            executorId,
             output,
             {
               ...task.memoryMetadata,
@@ -873,11 +1296,12 @@ class TokenOptimizedOrchestrator {
 
         // R2: Track completed output for cross-task sliding window context
         this.completedOutputs.push({
-          persona: task.persona,
+          persona: executorId,
           category: task.memoryMetadata?.category || "general",
           summary: output.slice(0, 200),
         });
 
+        task.persona = originalPersona;
         return {
           task,
           success: true,
@@ -889,18 +1313,21 @@ class TokenOptimizedOrchestrator {
 
       } catch (error) {
         retries++;
-        console.log(`  ⚠️  [${task.id}] Error: ${error}`);
-        this.logger.log("task_error", { taskId: task.id, persona: task.persona, attempt: retries, error: String(error) });
+        // Record failure (circuit breaker + history)
+        this.recordFailure(executorId);
+        recordOutcome(executorId, category, false, Date.now() - startTime);
+
+        console.log(`  ⚠️  [${task.id}] ${executorId} failed (attempt ${retries}): ${error}`);
+        this.logger.log("task_error", { taskId: task.id, persona: executorId, attempt: retries, error: String(error) });
 
         if (retries <= this.config.maxRetries) {
-          // O6: Faster first retry, then exponential backoff
+          // Reroute on next iteration — the failed executor's health score
+          // is now lower, so compositeRoute will naturally prefer alternatives
           const delay = Math.pow(2, Math.max(retries - 1, 0)) * 500;
-          console.log(`  ⏳ [${task.id}] Retrying in ${delay}ms...`);
+          console.log(`  ⏳ [${task.id}] Will reroute in ${delay}ms...`);
           await this.sleep(delay);
         } else {
-          // Record failure
-          this.recordFailure(task.persona);
-          
+          task.persona = originalPersona;
           return {
             task,
             success: false,
@@ -912,6 +1339,7 @@ class TokenOptimizedOrchestrator {
       }
     }
 
+    task.persona = originalPersona;
     return {
       task,
       success: false,
@@ -1110,6 +1538,16 @@ CRITICAL RULES:
       }
     }
 
+    // R7: Prompt reinforcement for tasks with expected file mutations
+    if (task.expectedMutations && task.expectedMutations.length > 0) {
+      const mutationList = task.expectedMutations
+        .map(m => `- ${m.file} (must contain: "${m.contains}")`)
+        .join("\n");
+      fullPrompt += `\n\nIMPORTANT: This task requires ACTUAL FILE CHANGES. ` +
+        `You must modify the following files:\n${mutationList}\n` +
+        `Do NOT just describe the changes. MAKE the changes using your file editing tools.`;
+    }
+
     return fullPrompt;
   }
 
@@ -1117,17 +1555,17 @@ CRITICAL RULES:
   // AGENT COMMUNICATION
   // --------------------------------------------------------------------------
 
-  private async callAgent(persona: string, prompt: string): Promise<string> {
+  private async callAgent(persona: string, prompt: string, taskTimeoutSeconds?: number): Promise<string> {
     // Priority 1: Local executor (claude-code, hermes)
     const localExec = this.localExecutors.get(persona);
     if (localExec) {
-      return this.callLocalAgent(localExec, prompt);
+      return this.callLocalAgent(localExec, prompt, taskTimeoutSeconds);
     }
 
     // Priority 2: Direct Anthropic API (bypasses Zo entirely)
     const anthropicKey = process.env.ANTHROPIC_API_KEY;
     if (anthropicKey) {
-      return this.callAnthropicDirect(persona, prompt, anthropicKey);
+      return this.callAnthropicDirect(persona, prompt, anthropicKey, taskTimeoutSeconds);
     }
 
     // Priority 3: Zo API (legacy fallback)
@@ -1136,11 +1574,12 @@ CRITICAL RULES:
       throw new Error("No API key found. Set ANTHROPIC_API_KEY (preferred) or ZO_CLIENT_IDENTITY_TOKEN");
     }
 
-    return this.callZoApi(persona, prompt, token);
+    return this.callZoApi(persona, prompt, token, taskTimeoutSeconds);
   }
 
-  private async callAnthropicDirect(persona: string, prompt: string, apiKey: string): Promise<string> {
-    const timeoutMs = this.config.timeoutSeconds * 1000;
+  private async callAnthropicDirect(persona: string, prompt: string, apiKey: string, taskTimeoutSeconds?: number): Promise<string> {
+    const effectiveTimeout = taskTimeoutSeconds || this.config.timeoutSeconds;
+    const timeoutMs = effectiveTimeout * 1000;
     const model = process.env.SWARM_ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
 
     // Load persona identity for system prompt
@@ -1172,7 +1611,7 @@ CRITICAL RULES:
     });
 
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`Anthropic API timeout after ${this.config.timeoutSeconds}s`)), timeoutMs);
+      setTimeout(() => reject(new Error(`Anthropic API timeout after ${effectiveTimeout}s`)), timeoutMs);
     });
 
     const result = await Promise.race([fetchPromise, timeoutPromise]);
@@ -1219,8 +1658,9 @@ CRITICAL RULES:
     return parts.join("\n\n---\n\n");
   }
 
-  private async callZoApi(persona: string, prompt: string, token: string): Promise<string> {
-    const timeoutMs = this.config.timeoutSeconds * 1000;
+  private async callZoApi(persona: string, prompt: string, token: string, taskTimeoutSeconds?: number): Promise<string> {
+    const effectiveTimeout = taskTimeoutSeconds || this.config.timeoutSeconds;
+    const timeoutMs = effectiveTimeout * 1000;
 
     console.log(`  ☁️  [${persona}] Zo API fallback`);
 
@@ -1247,14 +1687,15 @@ CRITICAL RULES:
     });
 
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`Zo API timeout after ${this.config.timeoutSeconds}s`)), timeoutMs);
+      setTimeout(() => reject(new Error(`Zo API timeout after ${effectiveTimeout}s`)), timeoutMs);
     });
 
     return Promise.race([fetchPromise, timeoutPromise]);
   }
 
-  private async callLocalAgent(executor: LocalExecutor, prompt: string): Promise<string> {
-    const timeoutMs = this.config.timeoutSeconds * 1000;
+  private async callLocalAgent(executor: LocalExecutor, prompt: string, taskTimeoutSeconds?: number): Promise<string> {
+    const effectiveTimeout = taskTimeoutSeconds || this.config.timeoutSeconds;
+    const timeoutMs = effectiveTimeout * 1000;
 
     if (!existsSync(executor.bridge)) {
       throw new Error(`Local executor bridge not found: ${executor.bridge}`);
@@ -1285,7 +1726,7 @@ CRITICAL RULES:
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
         proc.kill();
-        reject(new Error(`Local executor ${executor.id} timed out after ${this.config.timeoutSeconds}s`));
+        reject(new Error(`Local executor ${executor.id} timed out after ${effectiveTimeout}s`));
       }, timeoutMs);
     });
 
@@ -1338,6 +1779,239 @@ CRITICAL RULES:
   }
 
   // --------------------------------------------------------------------------
+  // COMPOSITE ROUTER (v4.2)
+  // --------------------------------------------------------------------------
+
+  private healthScore(persona: string): number {
+    const cb = this.circuitBreakers.get(persona);
+    if (!cb) return 1.0;
+    if (cb.isOpen) return 0.0;
+    const failurePenalty = cb.failures * 0.3;
+    const recencyBonus = cb.lastFailure > 0
+      ? Math.min(0.2, (Date.now() - cb.lastFailure) / 60000 * 0.2)
+      : 0;
+    return Math.max(0, Math.min(1.0, 1.0 - failurePenalty + recencyBonus));
+  }
+
+  private static SEMANTIC_SYNONYMS: Record<string, string[]> = {
+    "audit": ["review", "inspect", "assess", "evaluate", "check", "examine", "analyze", "analysis"],
+    "review": ["audit", "inspect", "assess", "evaluate", "examine", "analyze", "analysis"],
+    "research": ["investigate", "explore", "search", "find", "discover", "lookup", "gather", "scrape", "crawl", "fetch"],
+    "security": ["vulnerability", "exploit", "threat", "risk", "compliance", "penetration", "pentest", "hardening"],
+    "summarize": ["summary", "synthesize", "synthesis", "consolidate", "digest", "overview", "recap", "distill"],
+    "analyze": ["analysis", "examine", "evaluate", "assess", "inspect", "diagnose", "investigate", "audit"],
+    "scrape": ["crawl", "extract", "fetch", "parse", "harvest", "collect", "gather", "research"],
+    "generate": ["create", "produce", "build", "make", "write", "compose", "draft", "render"],
+    "debug": ["troubleshoot", "diagnose", "fix", "investigate", "trace", "inspect"],
+    "test": ["validate", "verify", "check", "assert", "spec", "quality"],
+    "deploy": ["publish", "release", "ship", "launch", "provision"],
+    "document": ["documentation", "describe", "explain", "annotate", "write"],
+    "performance": ["speed", "optimize", "latency", "benchmark", "profiling", "fast"],
+    "data": ["dataset", "database", "csv", "json", "table", "schema", "query", "sql"],
+    "web": ["website", "page", "url", "http", "html", "browser", "site", "online", "internet"],
+    "image": ["photo", "picture", "visual", "graphic", "screenshot", "render", "illustration"],
+    "api": ["endpoint", "rest", "webhook", "integration", "request", "response"],
+    "tool": ["orchestration", "workflow", "pipeline", "automation", "chain"],
+    "multimodal": ["image", "audio", "video", "visual", "media", "multi-modal"],
+    "reasoning": ["logic", "think", "deduce", "infer", "evaluate", "assess", "judge", "compare"],
+    "prototyping": ["prototype", "scaffold", "skeleton", "boilerplate", "draft", "quick", "rapid", "spike"],
+    "large-context": ["large", "corpus", "comprehensive", "thorough", "full", "entire", "complete"],
+  };
+
+  private expandWithSynonyms(words: Set<string>): Set<string> {
+    const expanded = new Set(words);
+    for (const w of words) {
+      const syns = TokenOptimizedOrchestrator.SEMANTIC_SYNONYMS[w];
+      if (syns) {
+        for (const s of syns) expanded.add(s);
+      }
+    }
+    return expanded;
+  }
+
+  private capabilityScore(task: Task, cap: ExecutorCapability): CapabilityScore {
+    const taskText = `${task.task} ${task.id} ${task.memoryMetadata?.category || ""} ${(task.memoryMetadata?.tags || []).join(" ")}`.toLowerCase();
+    const taskWords = new Set(taskText.split(/[\s,.\-_\/()]+/).filter(w => w.length > 2));
+    const taskStems = new Set<string>();
+    for (const w of taskWords) {
+      taskStems.add(w);
+      if (w.endsWith("ing")) taskStems.add(w.slice(0, -3));
+      if (w.endsWith("tion")) taskStems.add(w.slice(0, -4));
+      if (w.endsWith("ment")) taskStems.add(w.slice(0, -4));
+      if (w.endsWith("ity")) taskStems.add(w.slice(0, -3));
+      if (w.endsWith("ness")) taskStems.add(w.slice(0, -4));
+      if (w.endsWith("able")) taskStems.add(w.slice(0, -4));
+      if (w.endsWith("ible")) taskStems.add(w.slice(0, -4));
+      if (w.endsWith("ous")) taskStems.add(w.slice(0, -3));
+      if (w.endsWith("ive")) taskStems.add(w.slice(0, -3));
+      if (w.endsWith("al")) taskStems.add(w.slice(0, -2));
+      if (w.endsWith("ly")) taskStems.add(w.slice(0, -2));
+      if (w.endsWith("er")) taskStems.add(w.slice(0, -2));
+      if (w.endsWith("ed")) taskStems.add(w.slice(0, -2));
+      if (w.endsWith("s") && w.length > 4) taskStems.add(w.slice(0, -1));
+    }
+
+    const expandedTaskWords = this.expandWithSynonyms(taskWords);
+    const expandedTaskStems = this.expandWithSynonyms(taskStems);
+
+    const wordMatches = (capWord: string): boolean => {
+      if (capWord.length <= 2) return false;
+      if (expandedTaskWords.has(capWord)) return true;
+      const capStems = [capWord];
+      if (capWord.endsWith("ing")) capStems.push(capWord.slice(0, -3));
+      if (capWord.endsWith("tion")) capStems.push(capWord.slice(0, -4));
+      if (capWord.endsWith("ment")) capStems.push(capWord.slice(0, -4));
+      if (capWord.endsWith("ity")) capStems.push(capWord.slice(0, -3));
+      if (capWord.endsWith("al")) capStems.push(capWord.slice(0, -2));
+      if (capWord.endsWith("ly")) capStems.push(capWord.slice(0, -2));
+      if (capWord.endsWith("er")) capStems.push(capWord.slice(0, -2));
+      if (capWord.endsWith("ed")) capStems.push(capWord.slice(0, -2));
+      if (capWord.endsWith("s") && capWord.length > 4) capStems.push(capWord.slice(0, -1));
+      for (const cs of capStems) {
+        if (cs.length > 2 && expandedTaskStems.has(cs)) return true;
+      }
+      return false;
+    };
+
+    let raw = 0;
+    let maxPossible = 0;
+    const matches: string[] = [];
+
+    for (const keyword of cap.expertise) {
+      const kwLower = keyword.toLowerCase();
+      const kwWords = kwLower.split(/[-_\s\/]+/);
+      const kwMaxScore = kwWords.length > 1 ? 3 : 2;
+      maxPossible += kwMaxScore;
+      let kwHits = 0;
+      for (const kw of kwWords) {
+        if (wordMatches(kw)) kwHits++;
+      }
+      if (kwHits > 0) {
+        const kwScore = kwWords.length > 1 && kwHits > 1 ? 3 : 2;
+        raw += kwScore;
+        matches.push(`expertise:${keyword}`);
+      }
+    }
+
+    for (const phrase of cap.bestFor) {
+      maxPossible += 4;
+      const phraseLower = phrase.toLowerCase();
+      const phraseWords = phraseLower.split(/[\s,.\-_\/()]+/).filter(w => w.length > 2);
+      let phraseHits = 0;
+      for (const pw of phraseWords) {
+        if (wordMatches(pw)) phraseHits++;
+      }
+      if (phraseWords.length > 0 && phraseHits >= 2) {
+        const density = phraseHits / phraseWords.length;
+        const phraseScore = density * 4;
+        raw += phraseScore;
+        matches.push(`best_for:"${phrase}" (${phraseHits}/${phraseWords.length})`);
+      }
+    }
+
+    const normalized = maxPossible > 0 ? Math.min(1.0, raw / maxPossible) : 0;
+    return { raw, normalized, matches };
+  }
+
+  private compositeRoute(task: Task, excludeExecutors?: Set<string>): RouteDecision {
+    const strategy = this.config.routingStrategy || "balanced";
+    const w = STRATEGY_WEIGHTS[strategy] || STRATEGY_WEIGHTS.balanced;
+    const complexity = estimateComplexity(task);
+    const category = task.memoryMetadata?.category || "general";
+
+    const candidates: RouteDecision[] = [];
+
+    for (const [id, cap] of this.executorCapabilities) {
+      if (excludeExecutors?.has(id)) continue;
+
+      const capScore = this.capabilityScore(task, cap);
+      const hlth = this.healthScore(id);
+      const cfit = complexityFitScore(id, complexity.tier);
+      const hist = historyScore(id, category);
+
+      const composite = (w.capability * capScore.normalized)
+                      + (w.health * hlth)
+                      + (w.complexityFit * cfit)
+                      + (w.history * hist);
+
+      candidates.push({
+        executorId: id,
+        executorName: cap.name,
+        compositeScore: composite,
+        breakdown: {
+          capability: capScore.normalized,
+          health: hlth,
+          complexityFit: cfit,
+          history: hist,
+        },
+        method: "composite",
+      });
+    }
+
+    candidates.sort((a, b) => b.compositeScore - a.compositeScore);
+
+    const top3 = candidates.slice(0, 3);
+    console.log(`  🧭 [${task.id}] Route candidates (${complexity.tier}, strategy=${strategy}):`);
+    for (const c of top3) {
+      const b = c.breakdown;
+      console.log(`     ${c.executorId}: ${c.compositeScore.toFixed(3)} ` +
+        `(cap=${b.capability.toFixed(2)} hlth=${b.health.toFixed(2)} ` +
+        `cplx=${b.complexityFit.toFixed(2)} hist=${b.history.toFixed(2)})`);
+    }
+    this.logger.log("composite_route", {
+      taskId: task.id,
+      complexity: complexity.tier,
+      strategy,
+      winner: candidates[0]?.executorId,
+      compositeScore: candidates[0]?.compositeScore,
+      breakdown: candidates[0]?.breakdown,
+      candidates: top3.map(c => ({ id: c.executorId, score: c.compositeScore })),
+    });
+
+    const winner = candidates[0];
+    if (!winner || winner.compositeScore < 0.1) {
+      const fallbackId = this.executorCapabilities.has("claude-code") ? "claude-code" : [...this.executorCapabilities.keys()][0] || "claude-code";
+      return {
+        executorId: fallbackId,
+        executorName: "Claude Code",
+        compositeScore: 0,
+        breakdown: { capability: 0, health: 0, complexityFit: 0, history: 0 },
+        method: "fallback",
+      };
+    }
+
+    return winner;
+  }
+
+  private getAllRouteCandidates(task: Task, excludeExecutors?: Set<string>): RouteDecision[] {
+    const strategy = this.config.routingStrategy || "balanced";
+    const w = STRATEGY_WEIGHTS[strategy] || STRATEGY_WEIGHTS.balanced;
+    const complexity = estimateComplexity(task);
+    const category = task.memoryMetadata?.category || "general";
+
+    const candidates: RouteDecision[] = [];
+    for (const [id, cap] of this.executorCapabilities) {
+      if (excludeExecutors?.has(id)) continue;
+      const capScore = this.capabilityScore(task, cap);
+      const hlth = this.healthScore(id);
+      const cfit = complexityFitScore(id, complexity.tier);
+      const hist = historyScore(id, category);
+      const composite = (w.capability * capScore.normalized)
+                      + (w.health * hlth)
+                      + (w.complexityFit * cfit)
+                      + (w.history * hist);
+      candidates.push({
+        executorId: id,
+        executorName: cap.name,
+        compositeScore: composite,
+        breakdown: { capability: capScore.normalized, health: hlth, complexityFit: cfit, history: hist },
+        method: "composite",
+      });
+    }
+    return candidates.sort((a, b) => b.compositeScore - a.compositeScore);
+  }
+
+  // --------------------------------------------------------------------------
   // UTILITY METHODS
   // --------------------------------------------------------------------------
 
@@ -1363,31 +2037,64 @@ CRITICAL RULES:
     try {
       if (existsSync(registryPath)) {
         const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
-        if (Array.isArray(registry)) {
-          for (const p of registry) {
-            if (p.slug) { knownPersonas.add(p.slug); knownList.push(p.slug); }
-            if (p.name) { knownPersonas.add(p.name); knownList.push(p.name); }
+        const personas = registry.personas || [];
+        for (const p of personas) {
+          // Register local executor bridge
+          if (p.executor === "local" && p.bridge) {
+            const bridgePath = p.bridge.startsWith("/") ? p.bridge : join(WORKSPACE, p.bridge);
+            this.localExecutors.set(p.id, {
+              id: p.id,
+              bridge: bridgePath,
+              name: p.name || p.id,
+            });
           }
-        } else if (typeof registry === "object") {
-          for (const category of Object.values(registry)) {
-            if (Array.isArray(category)) {
-              for (const p of category as any[]) {
-                if (p.slug) { knownPersonas.add(p.slug); knownList.push(p.slug); }
-                if (p.name) { knownPersonas.add(p.name); knownList.push(p.name); }
-              }
-            }
+          // Register capability profile for all personas (local and API)
+          if (p.expertise || p.best_for) {
+            this.executorCapabilities.set(p.id, {
+              id: p.id,
+              name: p.name || p.id,
+              expertise: p.expertise || [],
+              bestFor: p.best_for || [],
+              isLocal: p.executor === "local",
+            });
           }
+        }
+        if (this.localExecutors.size > 0) {
+          console.log(`   Local executors: ${[...this.localExecutors.keys()].join(", ")}`);
         }
       }
     } catch {}
 
-    if (knownPersonas.size === 0) return;
+    if (knownPersonas.size === 0 && this.executorCapabilities.size === 0) return;
 
     const uniqueKnown = [...new Set(knownList)];
 
+    // Phase 1: Composite-route tasks with persona === "auto" (v4.2)
+    let autoRouted = 0;
+    for (const task of tasks) {
+      if (task.persona === "auto") {
+        if (this.executorCapabilities.size === 0) {
+          console.log(`  ⚠️  [${task.id}] No executor capabilities loaded — cannot auto-route`);
+          this.logger.log("auto_route_skip", { taskId: task.id, reason: "no_capabilities" });
+          continue;
+        }
+        const decision = this.compositeRoute(task);
+        task.persona = decision.executorId;
+        console.log(`  🎯 [${task.id}] Composite-route → ${decision.executorName} (score: ${decision.compositeScore.toFixed(3)}, method: ${decision.method})`);
+        this.logger.log("composite_route_assigned", { taskId: task.id, routed: decision.executorId, score: decision.compositeScore, method: decision.method });
+        autoRouted++;
+      }
+    }
+    if (autoRouted > 0) {
+      console.log(`   Composite-routed ${autoRouted} task(s) using ${this.config.routingStrategy || "balanced"} strategy\n`);
+    }
+
+    // Phase 2: Fuzzy-match remaining unknown personas
     for (const task of tasks) {
       // Skip fuzzy matching for local executor personas — they're invoked by exact ID
       if (this.localExecutors.has(task.persona)) continue;
+      // Skip already-resolved auto tasks
+      if (task.persona !== "auto" && this.executorCapabilities.has(task.persona)) continue;
 
       if (!knownPersonas.has(task.persona)) {
         const match = this.fuzzyMatchPersona(task.persona, uniqueKnown);
@@ -1406,6 +2113,140 @@ CRITICAL RULES:
     if (this.personaMappings.size > 0) {
       console.log(`   Resolved ${this.personaMappings.size} persona(s) via fuzzy matching. Known personas: ${knownPersonas.size}\n`);
     }
+  }
+
+  /**
+   * Auto-route a task with persona "auto" to the best-matching executor
+   * based on keyword matching between the task text and executor capabilities.
+   * Returns true if a match was found and the task.persona was updated.
+   */
+  private autoRouteTask(task: Task): boolean {
+    if (this.executorCapabilities.size === 0) {
+      console.log(`  ⚠️  [${task.id}] No executor capabilities loaded — cannot auto-route`);
+      this.logger.log("auto_route_skip", { taskId: task.id, reason: "no_capabilities" });
+      return false;
+    }
+
+    const taskText = `${task.task} ${task.id} ${task.memoryMetadata?.category || ""} ${(task.memoryMetadata?.tags || []).join(" ")}`.toLowerCase();
+    const taskWords = new Set(taskText.split(/[\s,.\-_\/()]+/).filter(w => w.length > 2));
+    // Build stems for fuzzy matching (e.g. "refactor" matches "refactoring")
+    const taskStems = new Set<string>();
+    for (const w of taskWords) {
+      taskStems.add(w);
+      if (w.endsWith("ing")) taskStems.add(w.slice(0, -3));
+      if (w.endsWith("tion")) taskStems.add(w.slice(0, -4));
+      if (w.endsWith("ment")) taskStems.add(w.slice(0, -4));
+      if (w.endsWith("ity")) taskStems.add(w.slice(0, -3));
+      if (w.endsWith("ness")) taskStems.add(w.slice(0, -4));
+      if (w.endsWith("able")) taskStems.add(w.slice(0, -4));
+      if (w.endsWith("ible")) taskStems.add(w.slice(0, -4));
+      if (w.endsWith("ous")) taskStems.add(w.slice(0, -3));
+      if (w.endsWith("ive")) taskStems.add(w.slice(0, -3));
+      if (w.endsWith("al")) taskStems.add(w.slice(0, -2));
+      if (w.endsWith("ly")) taskStems.add(w.slice(0, -2));
+      if (w.endsWith("er")) taskStems.add(w.slice(0, -2));
+      if (w.endsWith("ed")) taskStems.add(w.slice(0, -2));
+      if (w.endsWith("s") && w.length > 4) taskStems.add(w.slice(0, -1));
+    }
+
+    const scores: Array<{ id: string; name: string; score: number; matches: string[] }> = [];
+
+    // Helper: check if a capability word matches the task (exact or stem)
+    const wordMatches = (capWord: string): boolean => {
+      if (capWord.length <= 2) return false;
+      if (taskWords.has(capWord)) return true;
+      // Try stem of the capability word
+      const capStems = [capWord];
+      if (capWord.endsWith("ing")) capStems.push(capWord.slice(0, -3));
+      if (capWord.endsWith("tion")) capStems.push(capWord.slice(0, -4));
+      if (capWord.endsWith("ment")) capStems.push(capWord.slice(0, -4));
+      if (capWord.endsWith("ity")) capStems.push(capWord.slice(0, -3));
+      if (capWord.endsWith("ness")) capStems.push(capWord.slice(0, -4));
+      if (capWord.endsWith("able")) capStems.push(capWord.slice(0, -4));
+      if (capWord.endsWith("ible")) capStems.push(capWord.slice(0, -4));
+      if (capWord.endsWith("ous")) capStems.push(capWord.slice(0, -3));
+      if (capWord.endsWith("ive")) capStems.push(capWord.slice(0, -3));
+      if (capWord.endsWith("al")) capStems.push(capWord.slice(0, -2));
+      if (capWord.endsWith("ly")) capStems.push(capWord.slice(0, -2));
+      if (capWord.endsWith("er")) capStems.push(capWord.slice(0, -2));
+      if (capWord.endsWith("ed")) capStems.push(capWord.slice(0, -2));
+      if (capWord.endsWith("s") && capWord.length > 4) capStems.push(capWord.slice(0, -1));
+      for (const cs of capStems) {
+        if (cs.length > 2 && taskStems.has(cs)) return true;
+      }
+      return false;
+    };
+
+    for (const [id, cap] of this.executorCapabilities) {
+      let score = 0;
+      const matches: string[] = [];
+
+      // Score expertise keywords — word-boundary match with stemming
+      for (const keyword of cap.expertise) {
+        const kwLower = keyword.toLowerCase();
+        const kwWords = kwLower.split(/[-_\s\/]+/);
+        let kwHits = 0;
+        for (const kw of kwWords) {
+          if (wordMatches(kw)) kwHits++;
+        }
+        if (kwHits > 0) {
+          const kwScore = kwWords.length > 1 && kwHits > 1 ? 3 : 2;
+          score += kwScore;
+          matches.push(`expertise:${keyword}`);
+        }
+      }
+
+      // Score best_for phrases — weighted by match density
+      for (const phrase of cap.bestFor) {
+        const phraseLower = phrase.toLowerCase();
+        const phraseWords = phraseLower.split(/[\s,.\-_\/()]+/).filter(w => w.length > 2);
+        let phraseHits = 0;
+        for (const pw of phraseWords) {
+          if (wordMatches(pw)) phraseHits++;
+        }
+        if (phraseWords.length > 0 && phraseHits >= 2) {
+          const density = phraseHits / phraseWords.length;
+          const phraseScore = density * 4;
+          score += phraseScore;
+          matches.push(`best_for:"${phrase}" (${phraseHits}/${phraseWords.length})`);
+        }
+      }
+
+      if (score > 0) {
+        scores.push({ id, name: cap.name, score, matches });
+      }
+    }
+
+    if (scores.length === 0) {
+      // Default fallback: prefer claude-code as the most general-purpose executor
+      const fallback = this.executorCapabilities.has("claude-code") ? "claude-code" : [...this.executorCapabilities.keys()][0];
+      task.persona = fallback;
+      console.log(`  🎯 [${task.id}] Auto-route → ${fallback} (fallback — no keyword matches)`);
+      this.logger.log("auto_route", { taskId: task.id, routed: fallback, method: "fallback", scores: [] });
+      return true;
+    }
+
+    // Sort by score descending
+    scores.sort((a, b) => b.score - a.score);
+    const winner = scores[0];
+
+    task.persona = winner.id;
+    console.log(`  🎯 [${task.id}] Auto-route → ${winner.name} (score: ${winner.score.toFixed(1)}, matches: ${winner.matches.slice(0, 3).join(", ")})`);
+    this.logger.log("auto_route", {
+      taskId: task.id,
+      routed: winner.id,
+      method: "capability_match",
+      score: winner.score,
+      matches: winner.matches,
+      candidates: scores.slice(0, 4).map(s => ({ id: s.id, score: s.score })),
+    });
+
+    // Log runner-up if close (within 30% of winner score)
+    if (scores.length > 1 && scores[1].score >= winner.score * 0.7) {
+      console.log(`       Runner-up: ${scores[1].name} (score: ${scores[1].score.toFixed(1)})`);
+    }
+
+    return true;
   }
 
   private fuzzyMatchPersona(unknown: string, known: string[]): { name: string; score: number } | null {
@@ -1490,7 +2331,33 @@ CRITICAL RULES:
     return Math.ceil((text.length / 3.5) * 1.2);
   }
 
-  private truncateToBudget(text: string, maxLength: number): string {
+  // R3: Post-Mutation Verification — check that expected file changes were applied
+  private verifyMutations(task: Task): { verified: boolean; failures: string[] } {
+    const mutations = task.expectedMutations;
+    if (!mutations || mutations.length === 0) {
+      return { verified: true, failures: [] };
+    }
+
+    const failures: string[] = [];
+    for (const m of mutations) {
+      try {
+        if (!existsSync(m.file)) {
+          failures.push(`File not found: ${m.file}`);
+          continue;
+        }
+        const content = readFileSync(m.file, "utf8");
+        if (!content.includes(m.contains)) {
+          failures.push(`Mutation not found: ${m.file} missing "${m.contains.slice(0, 80)}"`);
+        }
+      } catch (err) {
+        failures.push(`Error reading ${m.file}: ${err}`);
+      }
+    }
+
+    return { verified: failures.length === 0, failures };
+  }
+
+    private truncateToBudget(text: string, maxLength: number): string {
     if (text.length <= maxLength) return text;
     
     // Try to truncate at a sensible boundary
@@ -1512,7 +2379,88 @@ CRITICAL RULES:
   // RESULT PERSISTENCE
   // --------------------------------------------------------------------------
 
-  private async saveResults(totalDurationMs: number): Promise<string | null> {
+  // R5 Option A: Write completion file to well-known path for caller polling
+  private writeCompletionFile(totalDurationMs: number): void {
+    const completionPath = `/dev/shm/${this.swarmId}-complete.json`;
+    const successful = this.results.filter(r => r.success);
+    const failed = this.results.filter(r => !r.success);
+
+    const completion = {
+      swarmId: this.swarmId,
+      sessionId: this.sessionId,
+      status: failed.length === 0 ? "success" : "completed_with_failures",
+      completedAt: new Date().toISOString(),
+      totalTasks: this.results.length,
+      successful: successful.length,
+      failed: failed.length,
+      durationMs: totalDurationMs,
+      durationHuman: `${(totalDurationMs / 1000 / 60).toFixed(1)} minutes`,
+      failedTasks: failed.map(r => ({ id: r.task.id, error: r.error })),
+    };
+
+    try {
+      writeFileSync(completionPath, JSON.stringify(completion, null, 2));
+      console.log(`  📣 Completion file: ${completionPath}`);
+      this.logger.log("completion_file_written", { path: completionPath });
+    } catch (err) {
+      console.warn(`  ⚠️ Failed to write completion file: ${err}`);
+    }
+  }
+
+  // R5 Option C: Send SMS or email notification via Zo API
+  private async sendCompletionNotification(totalDurationMs: number): Promise<void> {
+    const channel = this.config.notifyOnComplete;
+    if (!channel || channel === "none") return;
+
+    const token = process.env.ZO_CLIENT_IDENTITY_TOKEN;
+    if (!token) {
+      console.log("  ⚠️ Cannot send notification: no ZO_CLIENT_IDENTITY_TOKEN");
+      return;
+    }
+
+    const successful = this.results.filter(r => r.success);
+    const failed = this.results.filter(r => !r.success);
+    const status = failed.length === 0 ? "✅" : "⚠️";
+    const duration = `${(totalDurationMs / 1000 / 60).toFixed(1)}m`;
+
+    const message = `${status} Swarm "${this.swarmId}" complete: ${successful.length}/${this.results.length} tasks passed in ${duration}` +
+      (failed.length > 0 ? `\nFailed: ${failed.map(r => r.task.id).join(", ")}` : "");
+
+    const toolName = channel === "sms" ? "send_sms_to_user" : "send_email_to_user";
+    const toolInput = channel === "sms"
+      ? { message }
+      : { subject: `${status} Swarm ${this.swarmId} — ${successful.length}/${this.results.length} passed`, markdown_body: message };
+
+    try {
+      console.log(`  📲 Sending ${channel} notification...`);
+      this.logger.log("notification_sending", { channel, swarmId: this.swarmId });
+
+      const response = await fetch("https://api.zo.computer/zo/ask", {
+        method: "POST",
+        headers: {
+          "authorization": token,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          input: `Use the ${toolName} tool with this exact payload: ${JSON.stringify(toolInput)}. Do not add any extra text or commentary, just send it.`,
+        }),
+      });
+
+      if (response.ok) {
+        console.log(`  ✓ ${channel.toUpperCase()} notification sent`);
+        this.logger.log("notification_sent", { channel });
+      } else {
+        const err = await response.text();
+        console.log(`  ⚠️ Notification failed: ${response.status} ${err.slice(0, 200)}`);
+        this.logger.log("notification_failed", { channel, status: response.status, error: err.slice(0, 200) });
+      }
+    } catch (err) {
+      console.log(`  ⚠️ Notification error: ${err}`);
+      this.logger.log("notification_error", { channel, error: String(err) });
+    }
+  }
+
+    private async saveResults(totalDurationMs: number): Promise<string | null> {
     try {
       const resultsDir = join(process.env.HOME || "/tmp", ".swarm", "results");
       if (!existsSync(resultsDir)) {
@@ -1521,6 +2469,7 @@ CRITICAL RULES:
 
       const successful = this.results.filter(r => r.success);
       const failed = this.results.filter(r => !r.success);
+      const avgDuration = successful.reduce((sum, r) => sum + r.durationMs, 0) / successful.length || 0;
       const totalTokens = successful.reduce((sum, r) => sum + (r.tokensUsed || 0), 0);
 
       const outputPath = join(resultsDir, `${this.swarmId}_${Date.now()}.json`);
@@ -1555,7 +2504,7 @@ CRITICAL RULES:
         timestamp: new Date().toISOString(),
       };
 
-      await Bun.write(outputPath, JSON.stringify(report, null, 2));
+      writeFileSync(outputPath, JSON.stringify(report, null, 2));
       return outputPath;
     } catch (err) {
       console.warn(`Failed to save results: ${err}`);
@@ -1616,7 +2565,7 @@ async function main() {
   const args = process.argv.slice(2);
 
   const showUsage = () => {
-    console.log("Swarm Orchestrator v4.0.0 - Token Optimizer");
+    console.log("Swarm Orchestrator v4.3.0 - Hivemind Routing");
     console.log("\nUsage: bun orchestrate-v4.ts <tasks.json> [options]");
     console.log("\nOptions:");
     console.log("  --help, -h            Show this help message");
@@ -1627,7 +2576,9 @@ async function main() {
     console.log("  --concurrency <n>     Max concurrent tasks (default: 2)");
     console.log("  --timeout <seconds>   Task timeout in seconds (default: 300)");
     console.log("  --dag-mode <mode>     DAG execution mode: streaming|waves (default: streaming)");
+    console.log("  --notify <channel>    Send completion notification: sms|email (default: none, file always written)");
     console.log("  --model <name>        Model name for API calls (default: from env)");
+    console.log("  --routing-strategy <s> Routing strategy: fast|reliable|balanced|explore (default: balanced)");
   };
 
   if (args.length < 1 || args[0] === "--help" || args[0] === "-h") {
@@ -1727,6 +2678,7 @@ async function main() {
   let localConcurrency = fileConfig.localConcurrency;
   let timeoutSeconds = fileConfig.timeoutSeconds;
   let dagMode: "streaming" | "waves" = "streaming";
+  let routingStrategy: RoutingStrategy = (process.env.SWARM_ROUTING_STRATEGY as RoutingStrategy) || "balanced";
 
   for (let i = 1; i < args.length; i++) {
     switch (args[i]) {
@@ -1763,6 +2715,22 @@ async function main() {
       case "--model":
         fileConfig.modelName = args[++i];
         break;
+      case "--notify":
+        const notifyChannel = args[++i] as "sms" | "email";
+        if (notifyChannel !== "sms" && notifyChannel !== "email") {
+          console.error(`Invalid --notify value: ${notifyChannel}. Must be 'sms' or 'email'.`);
+          process.exit(1);
+        }
+        (fileConfig as any)._notifyOnComplete = notifyChannel;
+        break;
+      case "--routing-strategy":
+        const rs = args[++i] as RoutingStrategy;
+        if (!["fast", "reliable", "balanced", "explore"].includes(rs)) {
+          console.error(`Invalid --routing-strategy value: ${rs}. Must be one of: fast, reliable, balanced, explore.`);
+          process.exit(1);
+        }
+        routingStrategy = rs;
+        break;
     }
   }
 
@@ -1790,6 +2758,8 @@ async function main() {
     maxRetries: fileConfig.maxRetries,
     dagMode,
     modelName: fileConfig.modelName,
+    notifyOnComplete: (fileConfig as any)._notifyOnComplete || "none",
+    routingStrategy,
   });
 
   try {

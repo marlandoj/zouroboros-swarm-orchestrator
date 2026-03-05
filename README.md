@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-4.2.0-blue?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-4.3.0_Hivemind_Routing-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/runtime-Bun-f472b6?style=flat-square&logo=bun" alt="Bun" />
   <img src="https://img.shields.io/badge/platform-Zo_Computer-black?style=flat-square" alt="Zo Computer" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
@@ -30,10 +30,13 @@ This orchestrator solves all of these. It was battle-tested through [production 
 
 | Category | Feature | Details |
 |----------|---------|---------|
+| **Routing** | Hivemind Routing (v4.3) | 4-signal composite scoring (capability, health, complexity, history) with semantic synonym expansion — the swarm learns which agent handles each task type best |
+| | Retry-with-reroute | On failure, demotes the executor and automatically reroutes to the next-best candidate |
+| | Routing strategy presets | `fast`, `reliable`, `balanced`, `explore` — tune the weight of speed vs. reliability vs. diversity |
 | **Execution** | DAG task dependencies | Tasks declare `dependsOn` — the engine resolves the graph and streams execution as dependencies clear |
 | | Streaming & wave modes | `streaming` (default) launches tasks immediately; `waves` waits for full dependency levels |
 | | Split concurrency | Separate limits for API agents (default: 5) and local executors (default: 4) |
-| | Local executors | Route tasks to Claude Code or Hermes via bridge scripts — see [`zo-swarm-executors`](../zo-swarm-executors/) |
+| | Local executors | Route tasks to Claude Code, Hermes, Gemini, or Codex via bridge scripts — see [`zo-swarm-executors`](../zo-swarm-executors/) |
 | | Multi-backend API | Anthropic direct, Zo API, or local-only — automatic fallback chain |
 | **Memory** | 4 memory strategies | `none`, `sliding`, `hierarchical`, `sequential` — choose per-task or globally |
 | | Token budget management | Hard caps on context size with automatic truncation and budget utilization tracking |
@@ -50,7 +53,7 @@ This orchestrator solves all of these. It was battle-tested through [production 
 | | Persona memory bridge | Queries the shared Zo memory system for persona-specific facts |
 | | Inter-agent messaging | Agents can send/receive messages through SQLite-backed channels |
 | **Patterns** | Pre-built swarm patterns | 6 ready-to-use analysis patterns (website review, codebase review, product launch, etc.) |
-| | Persona registry | 10 personas including 2 local executors (Claude Code, Hermes) |
+| | Persona registry | 11 personas including 3 local executors (Claude Code, Hermes, Gemini) |
 
 ---
 
@@ -88,15 +91,17 @@ bun orchestrate-v4.ts doctor
 │  └──────┬────────────────────────────┬──────────┘    │
 │         │                            │               │
 │  ┌──────▼──────────────┐  ┌──────────▼───────────┐   │
-│  │   Memory Layer      │  │   Agent Router       │   │
-│  │ hierarchical/sliding│  │ local → API fallback │   │
-│  │ sequential/none     │  └──┬──────────┬────────┘   │
-│  └─────────────────────┘     │          │            │
+│  │   Memory Layer      │  │  Hivemind Router     │   │
+│  │ hierarchical/sliding│  │ 4-signal composite   │   │
+│  │ sequential/none     │  │ + semantic synonyms  │   │
+│  └─────────────────────┘  └──┬──────────┬────────┘   │
 │                         ┌────▼────┐ ┌───▼──────────┐ │
 │                         │ Local   │ │  API Backends│ │
 │                         │ Claude  │ │  Anthropic   │ │
 │                         │ Hermes  │ │  Zo API      │ │
-│                         └─────────┘ └──────────────┘ │
+│                         │ Gemini  │ └──────────────┘ │
+│                         │ Codex   │                  │
+│                         └─────────┘                  │
 │                                                      │
 │  ┌──────────┐  ┌──────────┐  ┌──────────────┐        │
 │  │  NDJSON  │  │  Result  │  │  Pre-warm    │        │
@@ -196,6 +201,7 @@ bun orchestrate-v4.ts <tasks.json> [options]
 | `--timeout <seconds>` | Per-task timeout | `300` |
 | `--model <name>` | Model name for API calls | from env |
 | `--dag-mode <mode>` | `streaming` (immediate) or `waves` (level-by-level) | `streaming` |
+| `--routing-strategy <s>` | Routing preset: `fast`, `reliable`, `balanced`, `explore` | `balanced` |
 | `--no-memory` | Disable all memory systems | `false` |
 | `doctor` | Run health checks (API, memory DB, config) | — |
 
@@ -263,7 +269,7 @@ Six ready-to-use analysis patterns in `assets/swarm-patterns.json`:
 
 ## Persona Registry
 
-Ten personas in `assets/persona-registry.json`, including 2 local executors:
+Twelve personas in `assets/persona-registry.json`, including 4 local executors:
 
 | Persona | Expertise | Executor |
 |---------|-----------|----------|
@@ -276,7 +282,56 @@ Ten personas in `assets/persona-registry.json`, including 2 local executors:
 | `devops-engineer` | CI/CD, infrastructure, monitoring, containerization | API |
 | `technical-writer` | Documentation, API docs, user guides, content strategy | API |
 | `claude-code` | Software engineering, code implementation, testing, code review | Local |
-| `hermes` | Autonomous research, web scraping, multi-tool investigation | Local |
+| `hermes` | Autonomous research, web scraping, multi-tool investigation, security audits | Local |
+| `gemini` | Code generation, reasoning, multimodal analysis, large-context evaluation | Local |
+| `codex` | Fast code generation, shell commands, rapid prototyping | Local |
+
+---
+
+## Hivemind Routing (v4.3)
+
+The swarm collectively learns which executor handles each task type best through a 4-signal composite scoring system:
+
+```
+Score = w₁·Capability + w₂·Health + w₃·ComplexityFit + w₄·History
+```
+
+### The 4 Signals
+
+| Signal | What it measures | How it works |
+|--------|-----------------|--------------|
+| **Capability** | Does this executor's expertise match the task? | Keyword + semantic synonym matching against executor `expertise` and `best_for` profiles |
+| **Health** | Is this executor currently reliable? | Circuit breaker state — open circuits get score 0 |
+| **Complexity Fit** | Is this the right executor for this difficulty level? | Affinity matrix maps executor strengths to trivial/simple/moderate/complex tiers |
+| **History** | Has this executor succeeded on similar tasks before? | Persistent success rate tracking with time + count decay |
+
+### Semantic Synonym Expansion
+
+Task words are expanded through 22 synonym clusters before matching. For example:
+- Task says "audit" → also matches executors with `review`, `inspect`, `assess`, `evaluate`, `analyze`
+- Task says "research" → also matches `investigate`, `explore`, `search`, `gather`, `scrape`
+- Task says "security" → also matches `vulnerability`, `compliance`, `threat`, `risk`
+
+This means hermes (with `web-research` expertise) now matches tasks asking to "investigate" or "gather data", and gemini (with `reasoning`) matches tasks asking to "evaluate" or "compare".
+
+### Routing Strategy Presets
+
+| Strategy | Capability | Health | Complexity | History | Best for |
+|----------|-----------|--------|------------|---------|----------|
+| `fast` | 0.10 | 0.20 | 0.45 | 0.25 | Speed-optimized, prefer simple executors |
+| `reliable` | 0.15 | 0.40 | 0.20 | 0.25 | Maximize uptime, penalize unhealthy executors |
+| `balanced` | 0.30 | 0.25 | 0.20 | 0.25 | Default — equal consideration of all signals |
+| `explore` | 0.20 | 0.15 | 0.15 | 0.50 | Favor executors with proven track records |
+
+### Retry-with-Reroute
+
+When an executor fails, the system doesn't just retry the same executor — it **demotes** it and picks the next-best candidate:
+
+```
+Task: security audit → security-engineer (API timeout 300s)
+  ↓ reroute (exclude security-engineer)
+Task: security audit → gemini (local, completes in 37s)
+```
 
 ---
 
@@ -310,12 +365,44 @@ bun performance-test.ts --url https://example.com
 
 | Version | Key Innovation | Status |
 |---------|----------------|--------|
-| **v4.2** | Local executors (Claude Code, Hermes), split concurrency, Anthropic direct API, configurable paths | ✅ Current |
+| **v4.3** | **Hivemind Routing** — semantic synonym matching, flattened affinity matrix, adaptive executor distribution across all 4 local executors | ✅ Current |
+| **v4.2** | Composite router, retry-with-reroute, executor history persistence, routing strategy presets | ✅ Current |
 | **v4.1** | DAG dependencies, NDJSON logging, doctor command, result persistence, inter-agent messaging | ✅ Current |
 | **v4.0** | Hierarchical memory, token budgets, pre-warm caching, format constraints | ✅ Current |
 | v3 | SQLite-backed cross-session memory, persona memory bridge | Archived |
 | v2 | Exponential backoff, circuit breaker, chunked processing, priority queue | Archived |
 | v1 | Basic `Promise.all` parallel execution | Archived |
+
+---
+
+## Roadmap
+
+Planned optimizations identified from production profiling of the FFB site review workload (11 tasks, ~16 min wall-clock). The primary bottleneck is Zo API latency (120-360s per context-enriched prompt).
+
+### Phase 1 — Quick Wins (2-3 hours, 5-13% savings)
+
+| ID | Optimization | Effort | Expected Savings | Description |
+|----|-------------|--------|------------------|-------------|
+| O3 | Pre-warm cache TTL | 1h | 3-8% | Cache domain-specific memory query results with a 1-hour TTL to avoid redundant lookups across tasks in the same swarm run |
+| O4 | Prompt format constraints | 1h | 2-5% | Request structured JSON output instead of free-form markdown to reduce response token verbosity |
+| O6 | Circuit breaker tuning | 15min | <2% | Adjust failure thresholds and cooldown reset timing based on observed production error patterns |
+
+### Phase 2 — Execution Engine (4-6 hours, +13-30% potential savings)
+
+| ID | Optimization | Effort | Expected Savings | Description |
+|----|-------------|--------|------------------|-------------|
+| O2 | DAG streaming improvements | 4h | 8-15% | Start dependent tasks immediately when individual prerequisites complete, rather than waiting for full wave completion |
+| O1 | Request batching | 6h | 5-15% | Combine multiple independent API calls into batched requests to reduce per-call overhead (requires Zo API batch endpoint research) |
+
+### Phase 3 — Refinements
+
+| ID | Optimization | Effort | Expected Savings | Description |
+|----|-------------|--------|------------------|-------------|
+| O5 | Early filtering | 1h | <2% | Add severity thresholds to skip low-priority findings during specialist analysis |
+| O7 | Output deduplication | 2h | 2-5% | Detect overlapping specialist outputs and consolidate duplicate findings in synthesis |
+| O8 | Concurrent caching | 1h | <1% | Prefetch memory queries during task execution to overlap I/O with computation |
+
+> **Note:** All optimizations maintain DAG semantics and output correctness. They can be implemented independently.
 
 ---
 
@@ -354,7 +441,7 @@ zo-swarm-orchestrator/
 │   ├── performance-test.ts           # Baseline vs enhanced performance test
 │   └── test-orchestrator.ts          # Test suite
 ├── assets/
-│   ├── persona-registry.json         # 10 personas (8 API + 2 local executors)
+│   ├── persona-registry.json         # 11 personas (8 API + 3 local executors)
 │   └── swarm-patterns.json           # 6 pre-built analysis patterns
 ├── examples/
     ├── sample-tasks.json             # Simple example
@@ -370,11 +457,11 @@ zo-swarm-orchestrator/
 ## Requirements
 
 - **Runtime:** [Bun](https://bun.sh) v1.2+
-- **Local executors:** [`zo-swarm-executors`](../zo-swarm-executors/) — bridge scripts and registry for Claude Code and Hermes
+- **Local executors:** [`zo-swarm-executors`](../zo-swarm-executors/) — bridge scripts and registry for Claude Code, Hermes, Gemini, and Codex
 - **API backend (one of):**
   - `ANTHROPIC_API_KEY` — direct Anthropic API (preferred)
   - `ZO_CLIENT_IDENTITY_TOKEN` — Zo API (automatically available on [Zo Computer](https://zo.computer))
-  - Local executors only — no API key needed if all tasks use `claude-code` or `hermes` personas
+  - Local executors only — no API key needed if all tasks use `claude-code`, `hermes`, `gemini`, or `codex` personas
 
 ---
 

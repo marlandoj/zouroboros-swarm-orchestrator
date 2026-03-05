@@ -4,13 +4,13 @@ description: Spawn parallel agent teams with token optimization, hierarchical me
 metadata:
   created: 2026-02-08
   updated: 2026-03-01
-  version: 4.2.0
+  version: 4.3.0
 ---
-# Swarm Orchestrator Skill v4.2.0
+# Swarm Orchestrator Skill v4.3.0
 
 A reusable skill that enables **any persona** to spawn parallel agent teams, delegate tasks across specialized personas, and synthesize results into coherent output.
 
-**v4.2 Updates:** Local executors (Claude Code, Hermes), split concurrency, direct Anthropic API support, configurable deployment paths
+**v4.3 "Hivemind Routing":** Semantic-aware composite routing that distributes work across all executors based on capability matching, health signals, complexity fit, and execution history. The swarm collectively learns which agent is best for each type of task.
 
 ---
 
@@ -38,7 +38,8 @@ bun orchestrate-v4.ts doctor
 
 | Version | Status | Key Innovation |
 |---------|--------|----------------|
-| **v4.2** | ✅ **Current** | Local executors, split concurrency, Anthropic direct API |
+| **v4.3** | ✅ **Current** | **Hivemind Routing** — semantic synonym matching, flattened affinity matrix, adaptive executor distribution |
+| v4.2 | ✅ Current | Composite router, retry-with-reroute, executor history, routing strategies |
 | v4.1 | ✅ Current | DAG dependencies, NDJSON logging, inter-agent messaging |
 | v4.0 | ✅ Current | Hierarchical memory, token budgets, pre-warm caching |
 | v1–v3 | Archived | Superseded by v4 |
@@ -105,6 +106,7 @@ sequential     386           5         0%
 | `--timeout <seconds>` | Per-task timeout | 300 |
 | `--model <name>` | Model name for API calls | from env |
 | `--dag-mode <mode>` | `streaming` or `waves` | streaming |
+| `--routing-strategy <s>` | `fast`, `reliable`, `balanced`, or `explore` | balanced |
 | `--no-memory` | Disable all memory | false |
 
 ---
@@ -147,7 +149,7 @@ sequential     386           5         0%
 
 ## Local Executors
 
-Tasks assigned to `claude-code` or `hermes` personas are routed to **local executor bridges** instead of the API. The bridge scripts, registry, and tooling live in the companion skill [`zo-swarm-executors`](../zo-swarm-executors/):
+Tasks assigned to `claude-code`, `hermes`, or `gemini` personas are routed to **local executor bridges** instead of the API. The bridge scripts, registry, and tooling live in the companion skill [`zo-swarm-executors`](../zo-swarm-executors/):
 
 ```
 Skills/zo-swarm-executors/
@@ -224,6 +226,18 @@ Create `config.json` in the skill root:
 | `SWARM_MEMORY_SCRIPT` | Memory search script path | `$SWARM_WORKSPACE/.zo/memory/scripts/memory.ts` |
 | `SWARM_AGENT_REGISTRY` | Persona registry JSON path | `$SWARM_WORKSPACE/agency-agents-personas.json` |
 | `SWARM_EXECUTOR_REGISTRY` | Local executor registry JSON path | `Skills/zo-swarm-executors/registry/executor-registry.json` |
+
+---
+
+## Roadmap
+
+Planned optimizations from production profiling (see README.md for full details):
+
+| Phase | Optimizations | Expected Savings |
+|-------|--------------|------------------|
+| **Phase 1** — Quick Wins | O3: Pre-warm cache TTL, O4: Prompt format constraints, O6: Circuit breaker tuning | 5-13% |
+| **Phase 2** — Execution Engine | O2: DAG streaming improvements, O1: Request batching | +13-30% |
+| **Phase 3** — Refinements | O5: Early filtering, O7: Output deduplication, O8: Concurrent caching | +2-5% |
 
 ---
 

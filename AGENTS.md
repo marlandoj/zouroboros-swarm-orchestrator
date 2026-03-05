@@ -1,5 +1,43 @@
 # Swarm Orchestrator - Agent Memory
 
+## March 2026 Failure Remediation (v4.0.0 → v4.1.0)
+
+**Incident:** Sprint 2 Deferred Remediation campaign (March 4, 2026) — 5 failure categories, ~50% efficiency.
+
+### Phase 1: Quick Wins (Implemented)
+| Fix | Addresses | What it does |
+|-----|-----------|-------------|
+| **R1: Campaign Locking** | F1, F3 | File lock at `/dev/shm/{swarmId}.lock` prevents duplicate concurrent runs. 30-min stale threshold. |
+| **R2: Per-Task Timeout** | F2 | `timeoutSeconds` field on each task. Tiers: quickEdit=120s, analysis=300s, heavyIO=900s, buildTest=600s. |
+| **R6: Stderr Capture** | F6 | Bridge script falls back to stderr when stdout is empty. Eliminates zero-length output successes. |
+
+### Phase 2: Reliability (Implemented)
+| Fix | Addresses | What it does |
+|-----|-----------|-------------|
+| **R3: Post-Mutation Verification** | F5 | `expectedMutations` array on tasks. After task success, verifies files contain expected strings. Fails task if not. |
+| **R4: Startup Preflight** | F1 | `preflight()` validates task structure, duplicate IDs, executor bridges, API creds, DAG deps, cycles, memory. Fails fast with diagnostics. |
+| **R7: Prompt Reinforcement** | F5 | Appends "IMPORTANT: This task requires ACTUAL FILE CHANGES" + file list to prompts when `expectedMutations` is set. |
+
+### Phase 3: UX (Implemented)
+| Fix | Addresses | What it does |
+|-----|-----------|-------------|
+| **R5: Async Completion Notification** | F4 | Writes `/dev/shm/{swarmId}-complete.json` on finish (always). Optionally sends SMS or email via `--notify sms` or `--notify email`. User is informed regardless of chat session state. |
+
+### Campaign JSON Example (post-remediation)
+```json
+{
+  "id": "s2-compression-middleware",
+  "persona": "claude-code",
+  "task": "Add compression middleware to server/index.ts",
+  "priority": "high",
+  "timeoutSeconds": 120,
+  "expectedMutations": [
+    { "file": "/home/workspace/fauna-flora-store/server/index.ts", "contains": "compression()" },
+    { "file": "/home/workspace/fauna-flora-store/package.json", "contains": "\"compression\"" }
+  ]
+}
+```
+
 ## Lessons Learned from Production Failures
 
 ### February 2026 Incident Analysis
