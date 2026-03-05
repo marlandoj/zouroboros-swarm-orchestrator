@@ -149,13 +149,20 @@ sequential     386           5         0%
 
 ## Local Executors
 
-Tasks assigned to `claude-code`, `hermes`, or `gemini` personas are routed to **local executor bridges** instead of the API. The bridge scripts, registry, and tooling live in the companion skill [`zo-swarm-executors`](../zo-swarm-executors/):
+Tasks assigned to `claude-code`, `hermes`, `gemini`, or `codex` personas are routed to **local executor bridges** instead of the API. The bridge scripts, registry, and tooling live in the companion skill [`zo-swarm-executors`](../zo-swarm-executors/):
+
+| Executor | Bridge | Speed | Strengths |
+|----------|--------|-------|-----------|
+| `claude-code` | `claude-code-bridge.sh` | ~25-120s | Complex multi-file changes, codebase-aware analysis, git operations |
+| `hermes` | `hermes-bridge.sh` | ~15-60s | Web research, security audits, multi-tool investigation, data gathering |
+| `gemini` | `gemini-bridge.sh` | ~2-12s (daemon) | Large-context analysis (1M+ tokens), multimodal, cross-validation |
+| `codex` | `codex-bridge.sh` | ~3s | Fast code generation, shell commands, rapid prototyping |
 
 ```
 Skills/zo-swarm-executors/
-├── bridges/          # claude-code-bridge.sh, hermes-bridge.sh
+├── bridges/          # claude-code, hermes, gemini, codex bridge scripts
 ├── registry/         # executor-registry.json
-├── scripts/          # doctor.ts, register.ts, test-harness.ts
+├── scripts/          # doctor.ts, register.ts, test-harness.ts, gemini-daemon.ts
 └── docs/             # BRIDGE_PROTOCOL.md, identity references
 ```
 
