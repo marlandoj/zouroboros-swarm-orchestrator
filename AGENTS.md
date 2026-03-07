@@ -57,61 +57,98 @@
 4. Bun/TypeScript orchestrator script logic was sound
 
 **Root Causes Identified:**
-- `/zo/ask` API has implicit rate limits per session
+- API calls had implicit rate limits per session (resolved: now local-only)
 - Complex analysis requires >120s timeout
 - No backoff strategy caused thundering herd
 - Missing circuit breaker allowed cascading failures
 
-## Implemented Solutions (v2)
+## Memory Integration (v4.5.0)
 
-### Architecture Changes
-
-```
-BEFORE (v1)                    AFTER (v2)
-─────────────                  ─────────────
-5 parallel agents              2 chunked agents
-120s timeout                   300s timeout
-No retry                       3 retries with exponential backoff
-No circuit breaker             Per-persona circuit breaker
-Unbounded context              Concise prompts (300-500 words)
-Fire-and-forget                Progress tracking + detailed logging
-```
-
-### Key Improvements
+As of v4.5.0, the orchestrator integrates with zo-memory-system for learning and adaptive routing:
 
 | Feature | Implementation | Benefit |
 |---------|---------------|---------|
-| Chunked Processing | `chunkArray(tasks, 2)` | Controls concurrency, prevents rate limits |
-| Exponential Backoff | `delay * retryCount` | Graceful degradation |
+| Auto-Episodes | `createSwarmEpisode()` at end of `run()` | Every swarm run becomes a queryable event |
+| 6-Signal Routing | `compositeRoute()` adds procedure + temporal | Routes learn from past success/failure |
+| Cognitive Profiles | Extended `executor-history.json` | Episode IDs, failure patterns, entity affinities |
+| Error Classification | Auto-classify: timeout, mutation_failed, file_not_found | Failure patterns inform routing avoidance |
+| Entity Affinities | Exponential moving average per entity per executor | Tracks which executors excel at which domains |
+
+### Composite Router Signals (v4.5)
+
+```
+composite = (w.capability * capScore)     # Task-capability matching
+           + (w.health * hlth)            # Circuit breaker health
+           + (w.complexityFit * cfit)     # Complexity tier affinity
+           + (w.history * hist)           # Historical success rate
+           + (0.10 * (procScore - 0.5))   # Procedure success bonus (±0.05)
+           + (0.05 * (tempScore - 0.5))   # Recent episodic bonus (±0.025)
+```
+
+### Querying Swarm History
+
+```bash
+# Recent swarm episodes
+bun ~/Skills/zo-memory-system/scripts/memory.ts episodes --entity "swarm.ffb" --since "7 days ago"
+
+# Executor cognitive profile
+bun ~/Skills/zo-memory-system/scripts/memory.ts profile --executor gemini
+
+# Procedure evolution
+bun ~/Skills/zo-memory-system/scripts/memory.ts procedures --evolve "site-review"
+```
+
+## Architecture (v4.4.0 — Local Executors Only)
+
+As of v4.4.0, all tasks are executed via local executor bridges (claude-code, hermes, gemini, codex).
+No remote API calls (zo/ask, Anthropic Direct) are used. This eliminates API latency as a bottleneck
+and removes the need for API credentials.
+
+```
+BEFORE (v4.3)                  AFTER (v4.4)
+─────────────                  ─────────────
+3 execution paths              1 execution path (local bridges)
+  - Local executor               - Local executor only
+  - Anthropic Direct API
+  - Zo API fallback
+Dual concurrency channels      Single concurrency channel
+  - maxConcurrency (API)          - localConcurrency
+  - localConcurrency (local)
+API credentials required       No API credentials needed
+```
+
+### Key Features
+
+| Feature | Implementation | Benefit |
+|---------|---------------|---------|
+| Local Executors | Bridge scripts (bash) | No API latency, full local control |
+| DAG Streaming | Promise.race loop | Tasks start immediately when deps resolve |
 | Circuit Breaker | `failures >= 2` | Prevents cascading failures |
 | Priority Queue | Sort by critical/high/medium/low | Important tasks complete first |
-| Structured Logging | JSON output with timing | Debuggability |
-| Task Validation | JSON schema check | Fail fast on invalid input |
+| Structured Logging | NDJSON output with timing | Debuggability |
+| Task Validation | Preflight checks | Fail fast on invalid input |
 
 ## Configuration Presets
 
 ### Safe Default (Recommended)
 ```bash
-MAX_CONCURRENCY=2
+SWARM_LOCAL_CONCURRENCY=4
 TIMEOUT_SECONDS=300
 MAX_RETRIES=3
-CHUNK_SIZE=2
 ```
 
 ### Aggressive (Development Only)
 ```bash
-MAX_CONCURRENCY=3
+SWARM_LOCAL_CONCURRENCY=6
 TIMEOUT_SECONDS=180
 MAX_RETRIES=2
-CHUNK_SIZE=3
 ```
 
 ### Conservative (Critical Production)
 ```bash
-MAX_CONCURRENCY=1
+SWARM_LOCAL_CONCURRENCY=2
 TIMEOUT_SECONDS=600
 MAX_RETRIES=5
-CHUNK_SIZE=1
 ```
 
 ## When to Use Which Version
@@ -131,17 +168,15 @@ CHUNK_SIZE=1
 
 ## Known Limitations
 
-### API Constraints
-- Maximum 2 concurrent requests per session recommended
-- 256k token context window per agent
-- ~5 req/min implicit rate limit observed
-- 60s minimum recommended between swarm invocations
+### Local Executor Constraints
+- Concurrency limited by machine resources (CPU/memory)
+- Each executor bridge runs as a child process
+- All tasks must have a registered local executor (no API fallback)
 
 ### Workarounds
-- Use chunked processing (v2) for >2 agents
-- Add delays between manual API calls
+- Adjust `localConcurrency` based on machine capacity
 - Break complex tasks into smaller subtasks
-- Use higher-cost models for complex analysis
+- Use task timeouts to prevent runaway processes
 
 ## Success Patterns
 

@@ -1,0 +1,21 @@
+[
+  {
+    "id": "task-1",
+    "persona": "auto",
+    "task": "Say hello",
+    "priority": "high"
+  },
+  {
+    "id": "task-1",
+    "persona": "auto",
+    "task": "Say goodbye",
+    "priority": "low"
+  },
+  {
+    "id": "task-3",
+    "persona": "auto",
+    "task": "Summarize",
+    "priority": "medium",
+    "dependsOn": ["nonexistent-task"]
+  }
+]

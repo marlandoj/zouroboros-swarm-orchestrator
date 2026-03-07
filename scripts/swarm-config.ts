@@ -14,14 +14,14 @@ const REGISTRY_FILE = join(CONFIG_DIR, "assets/persona-registry.json");
 
 interface SwarmConfig {
   defaultPersonas: string[];
-  maxConcurrency: number;
+  concurrency: number;
   timeoutSeconds: number;
   defaultFormat: string;
 }
 
 const DEFAULT_CONFIG: SwarmConfig = {
   defaultPersonas: [],
-  maxConcurrency: 5,
+  concurrency: 4,
   timeoutSeconds: 120,
   defaultFormat: "markdown"
 };
@@ -57,7 +57,7 @@ async function showConfig() {
 
 Current Settings:
   Default Personas: ${config.defaultPersonas.join(", ") || "(none)"}
-  Max Concurrency:  ${config.maxConcurrency}
+  Concurrency:      ${config.concurrency}
   Timeout:          ${config.timeoutSeconds}s
   Default Format:   ${config.defaultFormat}
 
@@ -76,11 +76,11 @@ async function setDefaultPersonas(personas: string) {
   console.log(`✅ Default personas set to: ${config.defaultPersonas.join(", ")}`);
 }
 
-async function setMaxConcurrency(value: string) {
+async function setConcurrency(value: string) {
   const config = await loadConfig();
-  config.maxConcurrency = parseInt(value);
+  config.concurrency = parseInt(value);
   await saveConfig(config);
-  console.log(`✅ Max concurrency set to: ${config.maxConcurrency}`);
+  console.log(`✅ Concurrency set to: ${config.concurrency}`);
 }
 
 async function setTimeout(value: string) {
@@ -163,7 +163,7 @@ Usage: bun swarm-config.ts <command> [options]
 Commands:
   --show                        Show current configuration
   --set-default-personas <list> Set default personas (comma-separated)
-  --set-max-concurrency <num>   Set max parallel agents
+  --set-concurrency <num>       Set max parallel local executors
   --set-timeout <seconds>       Set default timeout
   --add-persona <id> <name> <expertise> <best_for>
                                 Add or update a persona
@@ -174,7 +174,7 @@ Commands:
 Examples:
   bun swarm-config.ts --show
   bun swarm-config.ts --set-default-personas "financial-advisor,research-analyst"
-  bun swarm-config.ts --set-max-concurrency 10
+  bun swarm-config.ts --set-concurrency 4
   bun swarm-config.ts --add-persona health-coach "Health Coach" "wellness,nutrition" "health plans,diet advice"
 `);
     return;
@@ -196,9 +196,9 @@ Examples:
         }
         break;
         
-      case "--set-max-concurrency":
+      case "--set-concurrency":
         if (nextArg) {
-          await setMaxConcurrency(nextArg);
+          await setConcurrency(nextArg);
           i++;
         }
         break;

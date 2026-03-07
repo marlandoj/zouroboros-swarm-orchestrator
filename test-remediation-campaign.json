@@ -1,0 +1,31 @@
+[
+  {
+    "id": "setup-test-file",
+    "persona": "auto",
+    "task": "Create a file at /tmp/swarm-test-mutation.txt with the exact content: MUTATION_MARKER_ABC123. Use the Write tool or echo command to create this file. Do not output anything else.",
+    "priority": "high",
+    "timeoutSeconds": 60,
+    "expectedMutations": [
+      {
+        "file": "/tmp/swarm-test-mutation.txt",
+        "contains": "MUTATION_MARKER_ABC123"
+      }
+    ]
+  },
+  {
+    "id": "analysis-task",
+    "persona": "auto",
+    "task": "Respond with a brief one-paragraph summary of what a swarm orchestrator does. Keep your response under 100 words.",
+    "priority": "medium",
+    "dependsOn": ["setup-test-file"],
+    "timeoutSeconds": 120
+  },
+  {
+    "id": "synthesis-task",
+    "persona": "auto",
+    "task": "Combine the outputs from prior tasks into a single sentence summary. Keep your response under 50 words.",
+    "priority": "low",
+    "dependsOn": ["setup-test-file", "analysis-task"],
+    "timeoutSeconds": 90
+  }
+]

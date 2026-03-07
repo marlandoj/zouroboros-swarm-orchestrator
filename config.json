@@ -1,5 +1,4 @@
 {
-  "maxConcurrency": 5,
   "localConcurrency": 4,
   "timeoutSeconds": 300,
   "maxRetries": 3,

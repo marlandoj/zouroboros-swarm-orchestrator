@@ -2,7 +2,7 @@
 
 > Coordinate multiple AI agents in parallel on [Zo Computer](https://zo.computer). Define tasks, declare dependencies, and let the orchestrator route work to the right agent with automatic memory management, retries, and structured logging.
 
-[![Version](https://img.shields.io/badge/version-4.3.0_Hivemind_Routing-blue?style=flat-square)](https://github.com/marlandoj/zo-swarm-orchestrator)
+[![Version](https://img.shields.io/badge/version-4.5.0_Memory--Enriched_Routing-blue?style=flat-square)](https://github.com/marlandoj/zo-swarm-orchestrator)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
@@ -12,8 +12,9 @@
 This skill turns a list of tasks into a coordinated multi-agent workflow:
 
 - **DAG Task Dependencies** -- Tasks declare what they depend on. The orchestrator builds a graph and runs tasks as soon as their dependencies complete
-- **4 Local Executors** -- Route tasks to Claude Code, Hermes, Gemini, or Codex running on your machine via [zo-swarm-executors](https://github.com/marlandoj/zo-swarm-executors), plus API-based personas as fallback
-- **Hivemind Routing** -- The orchestrator scores executors on capability, health, complexity fit, and past performance to pick the best agent for each task
+- **Local-Only Execution** -- All tasks route through local executor bridges (Claude Code, Hermes, Gemini, Codex) via [zo-swarm-executors](https://github.com/marlandoj/zo-swarm-executors). No API calls, no API credentials needed
+- **6-Signal Routing** -- Scores executors on capability, health, complexity fit, past performance, procedural learning, and episodic performance to pick the best agent for each task
+- **Auto-Episodes** -- Every swarm run creates a memory episode with outcome, duration, executor list, and task results for querying later
 - **Token-Aware Memory** -- Four memory strategies (none, sliding, hierarchical, sequential) prevent context window exhaustion
 - **Resilience** -- Exponential backoff, per-persona circuit breakers, retry-with-reroute, and deadlock detection
 - **Structured Logging** -- Every event (start, complete, retry, failure) as a parseable NDJSON line
@@ -101,7 +102,7 @@ This creates a DAG: `plan` runs first, then `security` and `ux-review` run in pa
 
 ## How Routing Works
 
-The orchestrator picks which agent handles each task. Tasks assigned to `claude-code`, `hermes`, `gemini`, or `codex` run locally through bridge scripts. All other personas go through the API.
+The orchestrator picks which agent handles each task. All tasks route through local executor bridges — every task persona must have a matching executor in the registry.
 
 ### Available Executors
 
@@ -112,14 +113,16 @@ The orchestrator picks which agent handles each task. Tasks assigned to `claude-
 | Gemini | ~2-12s (daemon) | Large-context analysis (1M+ tokens), multimodal tasks |
 | Codex | ~3s | Fast code generation, shell commands, rapid prototyping |
 
-### Hivemind Routing (v4.3)
+### 6-Signal Routing (v4.5)
 
-When multiple executors could handle a task, the orchestrator scores them on four signals:
+When multiple executors could handle a task, the orchestrator scores them on six signals:
 
 1. **Capability match** -- Does the executor's expertise match the task keywords?
 2. **Health** -- Is the executor responding? What's its error rate?
 3. **Complexity fit** -- Simple tasks go to fast executors, deep analysis goes to thorough ones
 4. **Execution history** -- How well did this executor handle similar tasks before?
+5. **Procedure** -- Learned workflow preference from procedural memory (±0.05)
+6. **Temporal** -- Recent episodic performance bonus/penalty (±0.025)
 
 The routing improves with use. After a few runs, tasks flow to whichever executor handles them best.
 
@@ -255,13 +258,13 @@ bun orchestrate-v4.ts <tasks.json> [options]
 | `--swarm-id <id>` | Unique identifier for this run | auto-generated |
 | `--strategy <type>` | Memory: none, sliding, hierarchical, sequential | hierarchical |
 | `--max-tokens <n>` | Token budget for context | 8000 |
-| `--concurrency <n>` | Max parallel API agents | 5 |
-| `--local-concurrency <n>` | Max parallel local executors | 4 |
+| `--concurrency <n>` | Max parallel local executors | 4 |
 | `--timeout <seconds>` | Per-task timeout | 300 |
 | `--dag-mode <mode>` | streaming (immediate) or waves (level-by-level) | streaming |
 | `--routing-strategy <s>` | fast, reliable, balanced, explore | balanced |
 | `--no-memory` | Disable all memory | false |
-| `doctor` | Health check (API, memory DB, config) | -- |
+| `--notify <channel>` | Send completion notification: sms or email | none (file always written) |
+| `doctor` | Health check (memory DB, config, executors) | -- |
 
 ---
 
@@ -273,7 +276,6 @@ Three layers with clear precedence: **CLI flags** > **config.json** > **Environm
 
 ```json
 {
-  "maxConcurrency": 5,
   "localConcurrency": 4,
   "timeoutSeconds": 300,
   "maxRetries": 3,
@@ -290,8 +292,7 @@ Three layers with clear precedence: **CLI flags** > **config.json** > **Environm
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ANTHROPIC_API_KEY` | Anthropic API key (preferred) | -- |
-| `ZO_CLIENT_IDENTITY_TOKEN` | Zo API auth (fallback, auto-available on Zo) | -- |
+| `SWARM_LOCAL_CONCURRENCY` | Max concurrent local executors | `4` |
 | `SWARM_WORKSPACE` | Root for IDENTITY, SOUL.md, memory | `/home/workspace` |
 | `SWARM_EXECUTOR_REGISTRY` | Path to executor registry | `Skills/zo-swarm-executors/registry/executor-registry.json` |
 
@@ -303,20 +304,21 @@ Full list in [`SKILL.md`](SKILL.md).
 
 ```
 zo-swarm-orchestrator/
-├── SKILL.md                          # Full documentation (v4.3)
+├── SKILL.md                          # Full documentation (v4.5)
 ├── README.md                         # This file
 ├── config.json                       # Runtime configuration
 ├── AGENTS.md                         # Production lessons and patterns
 ├── scripts/
-│   ├── orchestrate-v4.ts             # Main orchestrator
+│   ├── orchestrate-v4.ts             # Main orchestrator (v4.5, 6-signal routing)
 │   ├── token-optimizer.ts            # Token cleaning + hierarchical memory
 │   ├── swarm-memory.ts               # SQLite persistence + inter-agent messaging
 │   ├── swarm-config.ts               # Configuration management CLI
+│   ├── inter-agent-comms.ts          # Inter-agent communication system
 │   ├── benchmark.ts                  # Memory strategy benchmarking
 │   ├── performance-test.ts           # Baseline vs enhanced performance test
 │   └── test-orchestrator.ts          # Test suite
 ├── assets/
-│   ├── persona-registry.json         # 12 personas (8 API + 4 local)
+│   ├── persona-registry.json         # Persona metadata
 │   └── swarm-patterns.json           # 6 pre-built analysis patterns
 └── examples/
     ├── sample-tasks.json             # Simple example
@@ -337,11 +339,7 @@ zo-swarm-orchestrator/
 ## Requirements
 
 - **Runtime:** [Bun](https://bun.sh) v1.2+
-- **Local executors (optional):** [zo-swarm-executors](https://github.com/marlandoj/zo-swarm-executors)
-- **API backend (one of):**
-  - `ANTHROPIC_API_KEY` -- Direct Anthropic API (preferred)
-  - `ZO_CLIENT_IDENTITY_TOKEN` -- Zo API (automatically available on Zo Computer)
-  - Local executors only -- No API key needed if all tasks use local personas
+- **Local executors:** [zo-swarm-executors](https://github.com/marlandoj/zo-swarm-executors) — all tasks route through local executor bridges
 
 ---
 

@@ -23,8 +23,11 @@ import { existsSync, mkdirSync, writeFileSync } from "fs";
 // CONFIGURATION
 // ============================================================================
 
-const ZO_API = "https://api.zo.computer/zo/ask";
-const ZO_TOKEN = process.env.ZO_CLIENT_IDENTITY_TOKEN || "";
+// Local executor bridge path — uses claude-code by default
+const EXECUTOR_BRIDGE = process.env.SWARM_PERF_BRIDGE || join(
+  process.env.HOME || "/home/workspace",
+  "Skills", "zo-swarm-executors", "bridges", "claude-code-bridge.sh"
+);
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -147,36 +150,45 @@ function estimateCost(promptTokens: number, outputTokens: number): number {
   return inputCost + outputCost;
 }
 
-async function callZoAgent(
+async function callLocalAgent(
   persona: string,
   prompt: string,
   timeoutMs = 300_000
 ): Promise<{ output: string; durationMs: number }> {
   const start = Date.now();
   const fullPrompt = `You are acting as the "${persona}" specialist.\n\n${prompt}`;
+  const timeoutSec = Math.ceil(timeoutMs / 1000);
 
-  const response = await fetch(ZO_API, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: ZO_TOKEN,
-    },
-    body: JSON.stringify({ input: fullPrompt }),
-    signal: AbortSignal.timeout(timeoutMs),
+  if (!existsSync(EXECUTOR_BRIDGE)) {
+    throw new Error(`Executor bridge not found: ${EXECUTOR_BRIDGE}`);
+  }
+
+  const proc = Bun.spawn(["bash", EXECUTOR_BRIDGE, fullPrompt], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env },
   });
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`API error: ${response.status} ${response.statusText} ${body.slice(0, 200)}`);
-  }
+  const execPromise = (async () => {
+    const [output, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (exitCode !== 0) {
+      throw new Error(`Executor exited with code ${exitCode}: ${stderr.slice(0, 500)}`);
+    }
+    return output.trim();
+  })();
 
-  let data: any;
-  try {
-    data = await response.json();
-  } catch (e) {
-    throw new Error(`JSON parse failed: ${e}`);
-  }
-  const output = data.output || data.response || data.message || JSON.stringify(data);
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      proc.kill();
+      reject(new Error(`Executor timed out after ${timeoutSec}s`));
+    }, timeoutMs);
+  });
+
+  const output = await Promise.race([execPromise, timeoutPromise]);
   return { output, durationMs: Date.now() - start };
 }
 
@@ -285,7 +297,7 @@ async function runBaseline(): Promise<TestRunMetrics> {
 
     while (retries < 3 && !success) {
       try {
-        const result = await callZoAgent(spec.persona, prompt);
+        const result = await callLocalAgent(spec.persona, prompt);
         output = result.output;
         execMs = result.durationMs;
         success = true;
@@ -413,7 +425,7 @@ async function runEnhanced(): Promise<TestRunMetrics> {
 
     while (retries < 3 && !success) {
       try {
-        const result = await callZoAgent(spec.persona, enrichedPrompt);
+        const result = await callLocalAgent(spec.persona, enrichedPrompt);
         output = result.output;
         execMs = result.durationMs;
         success = true;
@@ -572,11 +584,11 @@ async function main() {
   console.log("╚══════════════════════════════════════════════════════╝");
   console.log(`\nTarget: ${TARGET_URL}`);
   console.log(`Specialists: ${SPECIALISTS.length}`);
-  console.log(`API Token: ${ZO_TOKEN ? "present" : "MISSING"}`);
+  console.log(`Executor Bridge: ${EXECUTOR_BRIDGE}`);
 
-  if (!ZO_TOKEN) {
+  if (!existsSync(EXECUTOR_BRIDGE)) {
     console.error(
-      "\nERROR: ZO_CLIENT_IDENTITY_TOKEN not set. Cannot call Zo API."
+      `\nERROR: Executor bridge not found: ${EXECUTOR_BRIDGE}\nSet SWARM_PERF_BRIDGE to the path of your bridge script.`
     );
     process.exit(1);
   }

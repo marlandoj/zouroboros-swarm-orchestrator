@@ -1,0 +1,32 @@
+[
+  {
+    "id": "task-claude",
+    "persona": "claude-code",
+    "task": "Briefly summarize the contents of the /home/workspace/Skills/zo-swarm-orchestrator/scripts directory.",
+    "priority": "medium",
+    "memoryMetadata": {
+      "category": "analysis",
+      "tags": ["test", "local-executor"]
+    }
+  },
+  {
+    "id": "task-hermes",
+    "persona": "hermes",
+    "task": "Research the current weather in San Francisco and give a 1-sentence summary.",
+    "priority": "medium",
+    "memoryMetadata": {
+      "category": "research",
+      "tags": ["test", "local-executor"]
+    }
+  },
+  {
+    "id": "task-gemini",
+    "persona": "gemini",
+    "task": "Analyze the file /home/workspace/Skills/zo-swarm-orchestrator/scripts/orchestrate-v4.ts and list its top 3 features.",
+    "priority": "medium",
+    "memoryMetadata": {
+      "category": "analysis",
+      "tags": ["test", "local-executor"]
+    }
+  }
+]

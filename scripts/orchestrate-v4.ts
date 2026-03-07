@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 /**
- * Swarm Orchestrator v4.3.0 - Hivemind Routing
- * 
+ * Swarm Orchestrator v4.5.0 - Memory-Enriched Routing
+ *
  * Building on v3's persistent memory, v4 adds:
  * - Token optimization (HTML stripping, normalization, deduplication)
  * - Hierarchical memory (working + LTM)
  * - Sliding window memory option
  * - Token budget management
  * - Multiple memory strategies
- * 
+ *
  * v4.2 adds:
  * - Composite router (4-signal weighted scoring: capability, health, complexity fit, history)
  * - Retry-with-reroute (on failure, demote executor and try next-best)
@@ -21,6 +21,12 @@
  * - Expanded executor expertise keywords for hermes and gemini
  * - All 4 executors now get meaningful routing opportunities
  *
+ * v4.5 "Memory-Enriched Routing" adds:
+ * - Cognitive profiles (episode linkage, failure patterns, entity affinities)
+ * - Episodic memory integration (auto-creates episodes after swarm runs)
+ * - Procedure + temporal scoring signals in composite router
+ * - 6-signal routing: capability + health + complexity + history + procedure + temporal
+ *
  * Inspired by:
  * - prompt-refiner: Schema/Response compression
  * - Agent-Memory-Playground: 9 memory strategies
@@ -31,6 +37,8 @@ import { HierarchicalMemory, SlidingWindowMemory, MemoryItem, MemoryStrategy } f
 import { setInterval, clearInterval } from "timers";
 import { join } from "path";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, unlinkSync } from "fs";
+import { Database } from "bun:sqlite";
+import { randomUUID } from "crypto";
 
 // ============================================================================
 // TYPES
@@ -82,8 +90,7 @@ interface TaskResult {
 }
 
 interface OrchestratorConfig {
-  maxConcurrency: number;
-  localConcurrency: number;  // Separate concurrency cap for local executors (claude-code, hermes)
+  localConcurrency: number;
   timeoutSeconds: number;
   maxRetries: number;
   enableMemory: boolean;
@@ -137,6 +144,8 @@ interface RouteDecision {
     health: number;
     complexityFit: number;
     history: number;
+    procedure?: number;   // v4.5: learned workflow preference
+    temporal?: number;    // v4.5: recent episodic performance
   };
   method: "composite" | "fallback";
 }
@@ -198,6 +207,10 @@ interface ExecutorHistoryEntry {
   successes: number;
   avgDurationMs: number;
   lastUpdated: number;
+  // Cognitive profile extensions (v4.5)
+  recent_episode_ids?: string[];    // Last 10 episode IDs for context
+  failure_patterns?: string[];      // Common error types (for routing avoidance)
+  entity_affinities?: Record<string, number>;  // Entity → affinity score (0-1)
 }
 
 type ExecutorHistory = Record<string, ExecutorHistoryEntry>;
@@ -247,7 +260,13 @@ function historyScore(executorId: string, category: string): number {
   return entry.successes / entry.attempts;
 }
 
-function recordOutcome(executorId: string, category: string, success: boolean, durationMs: number): void {
+function recordOutcome(
+  executorId: string,
+  category: string,
+  success: boolean,
+  durationMs: number,
+  cognitive?: { episodeId?: string; errorType?: string; entities?: string[] }
+): void {
   const history = loadHistory();
   const key = `${executorId}:${category}`;
   const entry = history[key] || { attempts: 0, successes: 0, avgDurationMs: 0, lastUpdated: 0 };
@@ -262,8 +281,156 @@ function recordOutcome(executorId: string, category: string, success: boolean, d
     entry.successes = Math.ceil(entry.successes / 2);
   }
 
+  // Cognitive profile extensions
+  if (cognitive?.episodeId) {
+    entry.recent_episode_ids = [
+      cognitive.episodeId,
+      ...(entry.recent_episode_ids || []).slice(0, 9),
+    ];
+  }
+
+  if (!success && cognitive?.errorType) {
+    entry.failure_patterns = [
+      cognitive.errorType,
+      ...(entry.failure_patterns || []).slice(0, 4),
+    ];
+  }
+
+  if (cognitive?.entities?.length) {
+    const affinities = entry.entity_affinities || {};
+    for (const entity of cognitive.entities) {
+      const prev = affinities[entity] || 0.5;
+      // Exponential moving average: success pushes toward 1.0, failure toward 0.0
+      affinities[entity] = prev * 0.7 + (success ? 1.0 : 0.0) * 0.3;
+    }
+    entry.entity_affinities = affinities;
+  }
+
   history[key] = entry;
   saveHistory(history);
+}
+
+/** Get the cognitive profile for an executor:category pair. */
+function getCognitiveProfile(executorId: string, category: string): ExecutorHistoryEntry | null {
+  const history = loadHistory();
+  return history[`${executorId}:${category}`] || null;
+}
+
+/** Check if an executor has a known failure pattern (for routing avoidance). */
+function hasFailurePattern(executorId: string, category: string, pattern: string): boolean {
+  const profile = getCognitiveProfile(executorId, category);
+  return profile?.failure_patterns?.includes(pattern) ?? false;
+}
+
+// ============================================================================
+// EPISODIC MEMORY INTEGRATION (v4.5)
+// ============================================================================
+
+const MEMORY_DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
+
+/** Create a swarm episode in the shared memory DB. Returns episode ID or null on error. */
+function createSwarmEpisode(opts: {
+  swarmId: string;
+  summary: string;
+  outcome: "success" | "failure" | "resolved" | "ongoing";
+  durationMs: number;
+  entities: string[];
+  metadata?: Record<string, unknown>;
+}): string | null {
+  try {
+    if (!existsSync(MEMORY_DB_PATH)) return null;
+    const db = new Database(MEMORY_DB_PATH);
+
+    // Check episodes table exists (pre-migration DBs won't have it)
+    const hasTable = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='episodes'"
+    ).get();
+    if (!hasTable) { db.close(); return null; }
+
+    const id = randomUUID();
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    db.prepare(`
+      INSERT INTO episodes (id, summary, outcome, happened_at, duration_ms, metadata, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, opts.summary, opts.outcome, nowSec, opts.durationMs, JSON.stringify(opts.metadata || {}), nowSec);
+
+    for (const entity of opts.entities) {
+      db.prepare("INSERT OR IGNORE INTO episode_entities (episode_id, entity) VALUES (?, ?)").run(id, entity);
+    }
+
+    db.close();
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+/** Get recent success rate for an executor from episodic memory. Returns 0.5 as neutral if no data. */
+function getRecentSuccessRate(executorId: string, sinceDays: number = 7): number {
+  try {
+    if (!existsSync(MEMORY_DB_PATH)) return 0.5;
+    const db = new Database(MEMORY_DB_PATH);
+
+    const hasTable = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='episodes'"
+    ).get();
+    if (!hasTable) { db.close(); return 0.5; }
+
+    const sinceTs = Math.floor(Date.now() / 1000) - (sinceDays * 86400);
+
+    const row = db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN e.outcome = 'success' THEN 1 ELSE 0 END) as successes
+      FROM episodes e
+      JOIN episode_entities ee ON e.id = ee.episode_id
+      WHERE ee.entity = ? AND e.happened_at >= ?
+    `).get(executorId, sinceTs) as { total: number; successes: number } | null;
+
+    db.close();
+    if (!row || row.total < 2) return 0.5;  // Not enough data — neutral
+    return row.successes / row.total;
+  } catch {
+    return 0.5;
+  }
+}
+
+/** Get procedure success rate for an executor + category from procedures table. Returns 0.5 if no data. */
+function getProcedureSuccessRate(executorId: string, category?: string): number {
+  try {
+    if (!existsSync(MEMORY_DB_PATH)) return 0.5;
+    const db = new Database(MEMORY_DB_PATH);
+
+    const hasTable = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='procedures'"
+    ).get();
+    if (!hasTable) { db.close(); return 0.5; }
+
+    // Find procedures whose steps include this executor
+    const rows = db.prepare(
+      "SELECT steps, success_count, failure_count FROM procedures ORDER BY version DESC"
+    ).all() as Array<{ steps: string; success_count: number; failure_count: number }>;
+
+    db.close();
+
+    let totalSuccess = 0, totalFailure = 0;
+    for (const row of rows) {
+      try {
+        const steps = JSON.parse(row.steps) as Array<{ executor: string; taskPattern: string }>;
+        if (steps.some(s => s.executor === executorId)) {
+          totalSuccess += row.success_count;
+          totalFailure += row.failure_count;
+        }
+      } catch {}
+    }
+
+    const total = totalSuccess + totalFailure;
+    if (total < 2) return 0.5;
+    return totalSuccess / total;
+  } catch {
+    return 0.5;
+  }
 }
 
 // ============================================================================
@@ -271,7 +438,6 @@ function recordOutcome(executorId: string, category: string, success: boolean, d
 // ============================================================================
 
 const DEFAULT_CONFIG: OrchestratorConfig = {
-  maxConcurrency: parseInt(process.env.SWARM_MAX_CONCURRENCY || "2"),
   localConcurrency: parseInt(process.env.SWARM_LOCAL_CONCURRENCY || "4"),
   timeoutSeconds: parseInt(process.env.SWARM_TIMEOUT_SECONDS || "300"),
   maxRetries: parseInt(process.env.SWARM_MAX_RETRIES || "3"),
@@ -295,7 +461,6 @@ const DEFAULT_CONFIG: OrchestratorConfig = {
 // ============================================================================
 
 interface RuntimeConfig {
-  maxConcurrency: number;
   localConcurrency: number;
   timeoutSeconds: number;
   maxRetries: number;
@@ -313,7 +478,6 @@ interface RuntimeConfig {
 
 function loadConfig(): RuntimeConfig {
   const defaults = {
-    maxConcurrency: parseInt(process.env.SWARM_MAX_CONCURRENCY || "2"),
     localConcurrency: parseInt(process.env.SWARM_LOCAL_CONCURRENCY || "4"),
     timeoutSeconds: parseInt(process.env.SWARM_TIMEOUT_SECONDS || "300"),
     maxRetries: parseInt(process.env.SWARM_MAX_RETRIES || "3"),
@@ -335,7 +499,6 @@ function loadConfig(): RuntimeConfig {
     if (existsSync(configPath)) {
       const fileConfig = JSON.parse(readFileSync(configPath, "utf-8"));
       return {
-        maxConcurrency: fileConfig.maxConcurrency ?? defaults.maxConcurrency,
         localConcurrency: fileConfig.localConcurrency ?? defaults.localConcurrency,
         timeoutSeconds: fileConfig.timeoutSeconds ?? defaults.timeoutSeconds,
         maxRetries: fileConfig.maxRetries ?? defaults.maxRetries,
@@ -797,15 +960,9 @@ class TokenOptimizedOrchestrator {
         if (!existsSync(executor.bridge)) {
           errors.push(`Local executor bridge not found: ${executor.bridge} (persona: ${task.persona})`);
         }
+      } else {
+        errors.push(`No local executor found for persona: ${task.persona}. All tasks must have a local executor.`);
       }
-    }
-
-    // 4. Verify API credentials exist
-    const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY;
-    const hasZoToken = !!process.env.ZO_CLIENT_IDENTITY_TOKEN;
-    const needsApi = tasks.some(t => !this.localExecutors.has(t.persona));
-    if (needsApi && !hasAnthropicKey && !hasZoToken) {
-      errors.push("No API credentials found (need ANTHROPIC_API_KEY or ZO_CLIENT_IDENTITY_TOKEN) but tasks require API execution");
     }
 
     // 5. Verify DAG dependency references are valid
@@ -887,27 +1044,21 @@ class TokenOptimizedOrchestrator {
 
     try {
 
-    console.log(`\n🐝 Swarm Orchestrator v4.3.0 - Hivemind Routing`);
+    console.log(`\n🐝 Swarm Orchestrator v4.4.0 - Local Executors Only`);
     console.log(`   Swarm ID: ${this.swarmId}`);
     console.log(`   Session: ${this.sessionId}`);
     console.log(`   Tasks: ${tasks.length}`);
-    const apiBackend = process.env.ANTHROPIC_API_KEY ? "Anthropic Direct" : (process.env.ZO_CLIENT_IDENTITY_TOKEN ? "Zo API" : "NONE");
-    console.log(`   API Backend: ${apiBackend}`);
-    console.log(`   API Concurrency: ${this.config.maxConcurrency}`);
-    console.log(`   Local Concurrency: ${this.config.localConcurrency}`);
+    console.log(`   Concurrency: ${this.config.localConcurrency}`);
     console.log(`   Max Context Tokens: ${this.config.maxContextTokens}`);
     console.log(`   Memory Strategy: ${this.config.defaultMemoryStrategy.enableDeduplication ? "Hierarchical (optimized)" : "Basic"}`);
-    if (this.localExecutors.size > 0) {
-      console.log(`   Local Executors: ${[...this.localExecutors.keys()].join(", ")}`);
-    }
+    console.log(`   Executors: ${[...this.localExecutors.keys()].join(", ")}`);
     console.log();
 
     this.logger.log("run_start", {
       swarmId: this.swarmId,
       sessionId: this.sessionId,
       taskCount: tasks.length,
-      concurrency: this.config.maxConcurrency,
-      localConcurrency: this.config.localConcurrency,
+      concurrency: this.config.localConcurrency,
     });
 
     // Write initial progress
@@ -958,7 +1109,7 @@ class TokenOptimizedOrchestrator {
     } else {
       // Legacy chunk-based execution (priority-sorted)
       const sortedTasks = this.sortByPriority(tasks);
-      const chunks = this.createChunks(sortedTasks, this.config.maxConcurrency);
+      const chunks = this.createChunks(sortedTasks, this.config.localConcurrency);
 
       for (let i = 0; i < chunks.length; i++) {
         console.log(`\n📦 Chunk ${i + 1}/${chunks.length} (${chunks[i].length} tasks)`);
@@ -985,6 +1136,43 @@ class TokenOptimizedOrchestrator {
     });
     const logPath = await this.logger.flush();
     if (logPath) console.log(`📋 Logs saved to: ${logPath}`);
+
+    // v4.5: Create episodic memory entry for this swarm run
+    const successful = this.results.filter(r => r.success);
+    const failed = this.results.filter(r => !r.success);
+    const overallOutcome = failed.length === 0 ? "success" as const
+      : successful.length === 0 ? "failure" as const
+      : "resolved" as const;  // partial success
+    const executorsUsed = [...new Set(this.results.map(r => r.task.persona))];
+    const episodeId = createSwarmEpisode({
+      swarmId: this.swarmId,
+      summary: `Swarm "${this.swarmId}": ${successful.length}/${this.results.length} tasks passed in ${((Date.now() - startTime) / 1000).toFixed(1)}s` +
+        (failed.length > 0 ? `. Failed: ${failed.map(r => r.task.id).join(", ")}` : ""),
+      outcome: overallOutcome,
+      durationMs: Date.now() - startTime,
+      entities: [
+        `swarm.${this.swarmId}`,
+        ...executorsUsed,
+        ...(tasks.flatMap(t => t.memoryMetadata?.tags || [])),
+      ],
+      metadata: {
+        totalTasks: this.results.length,
+        successful: successful.length,
+        failed: failed.length,
+        executors: executorsUsed,
+      },
+    });
+    if (episodeId) {
+      console.log(`🧠 Episode saved: ${episodeId}`);
+      // Link episode to executor history cognitive profiles
+      for (const result of this.results) {
+        const cat = result.task.memoryMetadata?.category || "general";
+        recordOutcome(result.task.persona, cat, result.success, result.durationMs, {
+          episodeId,
+          entities: [cat, ...(result.task.memoryMetadata?.tags || [])],
+        });
+      }
+    }
 
     return this.results;
 
@@ -1016,21 +1204,14 @@ class TokenOptimizedOrchestrator {
     const pending = new Set(tasks.map(t => t.id));
     const executing = new Map<string, Promise<{ taskId: string; result: TaskResult }>>();
 
-    // Track concurrency per execution channel: Zo API vs local executors
-    let apiActive = 0;
-    let localActive = 0;
-    const executingChannel = new Map<string, "api" | "local">();
-    const totalConcurrency = this.config.maxConcurrency + this.config.localConcurrency;
+    let active = 0;
+    const maxConcurrency = this.config.localConcurrency;
 
     console.log(`\n🌊 DAG Streaming Execution`);
-    console.log(`   Zo API concurrency: ${this.config.maxConcurrency}`);
-    console.log(`   Local executor concurrency: ${this.config.localConcurrency}`);
-    console.log(`   Effective max concurrency: ${totalConcurrency}`);
+    console.log(`   Concurrency: ${maxConcurrency}`);
     this.logger.log("dag_streaming_start", {
       taskCount: tasks.length,
-      maxConcurrency: this.config.maxConcurrency,
-      localConcurrency: this.config.localConcurrency,
-      totalConcurrency,
+      concurrency: maxConcurrency,
     });
 
     const launchReady = () => {
@@ -1055,33 +1236,24 @@ class TokenOptimizedOrchestrator {
 
       // Launch tasks whose dependencies are all satisfied
       for (const id of [...pending]) {
-        if (executing.size >= totalConcurrency) break;
+        if (active >= maxConcurrency) break;
         if (executing.has(id)) continue;
 
         const task = taskMap.get(id)!;
         const deps = task.dependsOn || [];
         if (!deps.every(d => completed.has(d))) continue;
 
-        // Check per-channel concurrency limit
-        const isLocal = this.localExecutors.has(task.persona);
-        if (isLocal && localActive >= this.config.localConcurrency) continue;
-        if (!isLocal && apiActive >= this.config.maxConcurrency) continue;
-
-        // All deps met and channel has capacity — launch immediately
+        // All deps met and capacity available — launch immediately
         pending.delete(id);
-        const channel = isLocal ? "local" : "api";
-        if (isLocal) localActive++;
-        else apiActive++;
-        executingChannel.set(id, channel);
+        active++;
 
         const execution = this.executeTaskWithResilience(task).then(result => {
           return { taskId: id, result };
         });
         executing.set(id, execution);
 
-        const channelLabel = isLocal ? "🖥️  local" : "☁️  api";
-        console.log(`  ✨ [${id}] Streaming start → ${task.persona} [${channelLabel}] (api:${apiActive}/${this.config.maxConcurrency} local:${localActive}/${this.config.localConcurrency})`);
-        this.logger.log("task_streaming_start", { taskId: id, persona: task.persona, channel, apiActive, localActive, activeWorkers: executing.size });
+        console.log(`  ✨ [${id}] Streaming start → ${task.persona} [🖥️  local] (${active}/${maxConcurrency})`);
+        this.logger.log("task_streaming_start", { taskId: id, persona: task.persona, active, activeWorkers: executing.size });
       }
     };
 
@@ -1105,12 +1277,7 @@ class TokenOptimizedOrchestrator {
       const { taskId, result } = await Promise.race(executing.values());
       executing.delete(taskId);
       this.results.push(result);
-
-      // Decrement the correct channel counter
-      const completedChannel = executingChannel.get(taskId);
-      if (completedChannel === "local") localActive--;
-      else apiActive--;
-      executingChannel.delete(taskId);
+      active--;
 
       if (result.success) {
         completed.add(taskId);
@@ -1119,7 +1286,7 @@ class TokenOptimizedOrchestrator {
         failed.add(taskId);
         console.log(`  ❌ [${taskId}] Failed: ${result.error}`);
       }
-      this.logger.log("task_streaming_complete", { taskId, success: result.success, durationMs: result.durationMs, channel: completedChannel, apiActive, localActive, activeWorkers: executing.size });
+      this.logger.log("task_streaming_complete", { taskId, success: result.success, durationMs: result.durationMs, active, activeWorkers: executing.size });
 
       // Immediately check if new tasks can start
       launchReady();
@@ -1176,7 +1343,7 @@ class TokenOptimizedOrchestrator {
       }
 
       const sortedReady = this.sortByPriority(ready);
-      const chunks = this.createChunks(sortedReady, this.config.maxConcurrency);
+      const chunks = this.createChunks(sortedReady, this.config.localConcurrency);
 
       console.log(`\n🌊 Wave ${wave}: ${ready.length} tasks ready`);
       this.logger.log("dag_wave", { wave, readyCount: ready.length });
@@ -1277,9 +1444,12 @@ class TokenOptimizedOrchestrator {
           this.logger.log("mutation_verification_passed", { taskId: task.id, checks: task.expectedMutations.length });
         }
 
-        // Record success (circuit breaker + history)
+        // Record success (circuit breaker + history + cognitive profile)
         this.recordSuccess(executorId);
-        recordOutcome(executorId, category, true, Date.now() - startTime);
+        const taskEntities = [category, ...(task.memoryMetadata?.tags || [])];
+        recordOutcome(executorId, category, true, Date.now() - startTime, {
+          entities: taskEntities,
+        });
         this.logger.log("task_success", { taskId: task.id, persona: executorId, durationMs: Date.now() - startTime, outputTokens });
 
         // Save to memory with token optimization
@@ -1313,12 +1483,22 @@ class TokenOptimizedOrchestrator {
 
       } catch (error) {
         retries++;
-        // Record failure (circuit breaker + history)
+        // Record failure (circuit breaker + history + cognitive profile)
         this.recordFailure(executorId);
-        recordOutcome(executorId, category, false, Date.now() - startTime);
+        const errorStr = String(error);
+        const errorType = errorStr.includes("timeout") ? "timeout"
+          : errorStr.includes("Mutation verification") ? "mutation_failed"
+          : errorStr.includes("ENOENT") ? "file_not_found"
+          : errorStr.includes("permission") ? "permission_denied"
+          : "unknown";
+        const failEntities = [category, ...(task.memoryMetadata?.tags || [])];
+        recordOutcome(executorId, category, false, Date.now() - startTime, {
+          errorType,
+          entities: failEntities,
+        });
 
         console.log(`  ⚠️  [${task.id}] ${executorId} failed (attempt ${retries}): ${error}`);
-        this.logger.log("task_error", { taskId: task.id, persona: executorId, attempt: retries, error: String(error) });
+        this.logger.log("task_error", { taskId: task.id, persona: executorId, attempt: retries, error: errorStr });
 
         if (retries <= this.config.maxRetries) {
           // Reroute on next iteration — the failed executor's health score
@@ -1556,141 +1736,11 @@ CRITICAL RULES:
   // --------------------------------------------------------------------------
 
   private async callAgent(persona: string, prompt: string, taskTimeoutSeconds?: number): Promise<string> {
-    // Priority 1: Local executor (claude-code, hermes)
     const localExec = this.localExecutors.get(persona);
-    if (localExec) {
-      return this.callLocalAgent(localExec, prompt, taskTimeoutSeconds);
+    if (!localExec) {
+      throw new Error(`No local executor found for persona: ${persona}. Register an executor in the executor registry.`);
     }
-
-    // Priority 2: Direct Anthropic API (bypasses Zo entirely)
-    const anthropicKey = process.env.ANTHROPIC_API_KEY;
-    if (anthropicKey) {
-      return this.callAnthropicDirect(persona, prompt, anthropicKey, taskTimeoutSeconds);
-    }
-
-    // Priority 3: Zo API (legacy fallback)
-    const token = process.env.ZO_CLIENT_IDENTITY_TOKEN;
-    if (!token) {
-      throw new Error("No API key found. Set ANTHROPIC_API_KEY (preferred) or ZO_CLIENT_IDENTITY_TOKEN");
-    }
-
-    return this.callZoApi(persona, prompt, token, taskTimeoutSeconds);
-  }
-
-  private async callAnthropicDirect(persona: string, prompt: string, apiKey: string, taskTimeoutSeconds?: number): Promise<string> {
-    const effectiveTimeout = taskTimeoutSeconds || this.config.timeoutSeconds;
-    const timeoutMs = effectiveTimeout * 1000;
-    const model = process.env.SWARM_ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
-
-    // Load persona identity for system prompt
-    const systemPrompt = this.loadPersonaSystemPrompt(persona);
-
-    console.log(`  🔷 [${persona}] Direct Anthropic API → ${model}`);
-    this.logger.log("anthropic_direct_start", { persona, model });
-
-    const fetchPromise = fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 4096,
-        system: systemPrompt,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    }).then(async (response) => {
-      if (!response.ok) {
-        const err = await response.text();
-        throw new Error(`Anthropic API error: ${response.status} ${err.slice(0, 300)}`);
-      }
-      const data = await response.json() as { content: Array<{ type: string; text: string }> };
-      return data.content?.map(b => b.text).join("\n") || "";
-    });
-
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`Anthropic API timeout after ${effectiveTimeout}s`)), timeoutMs);
-    });
-
-    const result = await Promise.race([fetchPromise, timeoutPromise]);
-    this.logger.log("anthropic_direct_complete", { persona, outputLength: result.length });
-    return result;
-  }
-
-  private loadPersonaSystemPrompt(persona: string): string {
-    // Try loading persona identity file
-    const identityPath = join(PATHS.identityDir, `${persona}.md`);
-    let identity = "";
-    try {
-      if (existsSync(identityPath)) {
-        identity = readFileSync(identityPath, "utf-8");
-      }
-    } catch {}
-
-    // Try loading persona memory
-    const memoryPath = join(PATHS.personaMemoryDir, `${persona}.md`);
-    let memory = "";
-    try {
-      if (existsSync(memoryPath)) {
-        memory = readFileSync(memoryPath, "utf-8");
-      }
-    } catch {}
-
-    // Try loading SOUL.md constitution
-    let soul = "";
-    try {
-      const soulPath = PATHS.soulFile;
-      if (existsSync(soulPath)) {
-        soul = readFileSync(soulPath, "utf-8");
-      }
-    } catch {}
-
-    const parts: string[] = [];
-    if (soul) parts.push(soul);
-    if (identity) parts.push(identity);
-    if (memory) parts.push(`## Persona Memory\n\n${memory}`);
-    if (parts.length === 0) {
-      parts.push(`You are a ${persona} specialist. Respond with expertise in your domain.`);
-    }
-
-    return parts.join("\n\n---\n\n");
-  }
-
-  private async callZoApi(persona: string, prompt: string, token: string, taskTimeoutSeconds?: number): Promise<string> {
-    const effectiveTimeout = taskTimeoutSeconds || this.config.timeoutSeconds;
-    const timeoutMs = effectiveTimeout * 1000;
-
-    console.log(`  ☁️  [${persona}] Zo API fallback`);
-
-    const body: Record<string, any> = {
-      input: `[Persona: ${persona}]\n\n${prompt}`,
-    };
-    if (this.config.modelName) {
-      body.model_name = this.config.modelName;
-    }
-
-    const fetchPromise = fetch("https://api.zo.computer/zo/ask", {
-      method: "POST",
-      headers: {
-        "authorization": token,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-    }).then(async (response) => {
-      if (!response.ok) {
-        throw new Error(`Zo API error: ${response.status} ${response.statusText}`);
-      }
-      const data = await response.json();
-      return data.output || "";
-    });
-
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`Zo API timeout after ${effectiveTimeout}s`)), timeoutMs);
-    });
-
-    return Promise.race([fetchPromise, timeoutPromise]);
+    return this.callLocalAgent(localExec, prompt, taskTimeoutSeconds);
   }
 
   private async callLocalAgent(executor: LocalExecutor, prompt: string, taskTimeoutSeconds?: number): Promise<string> {
@@ -1929,10 +1979,16 @@ CRITICAL RULES:
       const cfit = complexityFitScore(id, complexity.tier);
       const hist = historyScore(id, category);
 
+      // v4.5: Memory-enriched scoring (additive bonuses, 0.10 + 0.05 max)
+      const procScore = getProcedureSuccessRate(id, category);
+      const tempScore = getRecentSuccessRate(id, 7);
+
       const composite = (w.capability * capScore.normalized)
                       + (w.health * hlth)
                       + (w.complexityFit * cfit)
-                      + (w.history * hist);
+                      + (w.history * hist)
+                      + (0.10 * (procScore - 0.5))   // Procedure bonus/penalty (±0.05)
+                      + (0.05 * (tempScore - 0.5));   // Temporal bonus/penalty (±0.025)
 
       candidates.push({
         executorId: id,
@@ -1943,6 +1999,8 @@ CRITICAL RULES:
           health: hlth,
           complexityFit: cfit,
           history: hist,
+          procedure: procScore,
+          temporal: tempScore,
         },
         method: "composite",
       });
@@ -1956,7 +2014,9 @@ CRITICAL RULES:
       const b = c.breakdown;
       console.log(`     ${c.executorId}: ${c.compositeScore.toFixed(3)} ` +
         `(cap=${b.capability.toFixed(2)} hlth=${b.health.toFixed(2)} ` +
-        `cplx=${b.complexityFit.toFixed(2)} hist=${b.history.toFixed(2)})`);
+        `cplx=${b.complexityFit.toFixed(2)} hist=${b.history.toFixed(2)}` +
+        `${b.procedure !== undefined ? ` proc=${b.procedure.toFixed(2)}` : ""}` +
+        `${b.temporal !== undefined ? ` temp=${b.temporal.toFixed(2)}` : ""})`);
     }
     this.logger.log("composite_route", {
       taskId: task.id,
@@ -1996,15 +2056,19 @@ CRITICAL RULES:
       const hlth = this.healthScore(id);
       const cfit = complexityFitScore(id, complexity.tier);
       const hist = historyScore(id, category);
+      const procScore = getProcedureSuccessRate(id, category);
+      const tempScore = getRecentSuccessRate(id, 7);
       const composite = (w.capability * capScore.normalized)
                       + (w.health * hlth)
                       + (w.complexityFit * cfit)
-                      + (w.history * hist);
+                      + (w.history * hist)
+                      + (0.10 * (procScore - 0.5))
+                      + (0.05 * (tempScore - 0.5));
       candidates.push({
         executorId: id,
         executorName: cap.name,
         compositeScore: composite,
-        breakdown: { capability: capScore.normalized, health: hlth, complexityFit: cfit, history: hist },
+        breakdown: { capability: capScore.normalized, health: hlth, complexityFit: cfit, history: hist, procedure: procScore, temporal: tempScore },
         method: "composite",
       });
     }
@@ -2407,16 +2471,10 @@ CRITICAL RULES:
     }
   }
 
-  // R5 Option C: Send SMS or email notification via Zo API
+  // R5 Option C: Send SMS or email notification via local executor
   private async sendCompletionNotification(totalDurationMs: number): Promise<void> {
     const channel = this.config.notifyOnComplete;
     if (!channel || channel === "none") return;
-
-    const token = process.env.ZO_CLIENT_IDENTITY_TOKEN;
-    if (!token) {
-      console.log("  ⚠️ Cannot send notification: no ZO_CLIENT_IDENTITY_TOKEN");
-      return;
-    }
 
     const successful = this.results.filter(r => r.success);
     const failed = this.results.filter(r => !r.success);
@@ -2431,29 +2489,22 @@ CRITICAL RULES:
       ? { message }
       : { subject: `${status} Swarm ${this.swarmId} — ${successful.length}/${this.results.length} passed`, markdown_body: message };
 
+    // Find any available local executor to send the notification
+    const executor = this.localExecutors.values().next().value;
+    if (!executor) {
+      console.log("  ⚠️ Cannot send notification: no local executors available");
+      return;
+    }
+
     try {
-      console.log(`  📲 Sending ${channel} notification...`);
-      this.logger.log("notification_sending", { channel, swarmId: this.swarmId });
+      console.log(`  📲 Sending ${channel} notification via ${executor.name}...`);
+      this.logger.log("notification_sending", { channel, swarmId: this.swarmId, executor: executor.id });
 
-      const response = await fetch("https://api.zo.computer/zo/ask", {
-        method: "POST",
-        headers: {
-          "authorization": token,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          input: `Use the ${toolName} tool with this exact payload: ${JSON.stringify(toolInput)}. Do not add any extra text or commentary, just send it.`,
-        }),
-      });
+      const notifyPrompt = `Use the ${toolName} tool with this exact payload: ${JSON.stringify(toolInput)}. Do not add any extra text or commentary, just send it.`;
+      await this.callLocalAgent(executor, notifyPrompt, 60);
 
-      if (response.ok) {
-        console.log(`  ✓ ${channel.toUpperCase()} notification sent`);
-        this.logger.log("notification_sent", { channel });
-      } else {
-        const err = await response.text();
-        console.log(`  ⚠️ Notification failed: ${response.status} ${err.slice(0, 200)}`);
-        this.logger.log("notification_failed", { channel, status: response.status, error: err.slice(0, 200) });
-      }
+      console.log(`  ✓ ${channel.toUpperCase()} notification sent`);
+      this.logger.log("notification_sent", { channel });
     } catch (err) {
       console.log(`  ⚠️ Notification error: ${err}`);
       this.logger.log("notification_error", { channel, error: String(err) });
@@ -2477,7 +2528,7 @@ CRITICAL RULES:
         swarmId: this.swarmId,
         sessionId: this.sessionId,
         config: {
-          maxConcurrency: this.config.maxConcurrency,
+          concurrency: this.config.localConcurrency,
           timeoutSeconds: this.config.timeoutSeconds,
           maxRetries: this.config.maxRetries,
           enableMemory: this.config.enableMemory,
@@ -2573,11 +2624,10 @@ async function main() {
     console.log("  --no-memory           Disable persistent memory");
     console.log("  --strategy <type>     Memory strategy: hierarchical|sliding|none (default: hierarchical)");
     console.log("  --max-tokens <n>      Max context tokens (default: 8000)");
-    console.log("  --concurrency <n>     Max concurrent tasks (default: 2)");
+    console.log("  --concurrency <n>     Max concurrent local executors (default: 4)");
     console.log("  --timeout <seconds>   Task timeout in seconds (default: 300)");
     console.log("  --dag-mode <mode>     DAG execution mode: streaming|waves (default: streaming)");
     console.log("  --notify <channel>    Send completion notification: sms|email (default: none, file always written)");
-    console.log("  --model <name>        Model name for API calls (default: from env)");
     console.log("  --routing-strategy <s> Routing strategy: fast|reliable|balanced|explore (default: balanced)");
   };
 
@@ -2593,14 +2643,11 @@ async function main() {
     // 1. Config check
     const cfg = loadConfig();
     console.log("Config:");
-    console.log(`  maxConcurrency: ${cfg.maxConcurrency} ${cfg.maxConcurrency > 2 ? "⚠️  (>2 risks rate limiting)" : "✓"}`);
+    console.log(`  localConcurrency: ${cfg.localConcurrency} ✓`);
     console.log(`  timeoutSeconds: ${cfg.timeoutSeconds} ${cfg.timeoutSeconds > 600 ? "⚠️  (very long)" : "✓"}`);
     console.log(`  maxRetries: ${cfg.maxRetries} ✓`);
     console.log(`  memory.enable: ${cfg.memory.enable} ✓`);
-
-    // 2. API token check
-    const token = process.env.ZO_CLIENT_IDENTITY_TOKEN;
-    console.log(`\nAPI Token: ${token ? "present ✓" : "MISSING ✗"}`);
+    console.log(`  mode: local executors only ✓`);
 
     // 3. Swarm memory DB check
     const swarmDbPath = join(process.env.HOME || "/tmp", ".swarm", "swarm-memory.db");
@@ -2674,7 +2721,6 @@ async function main() {
     maxTokens: fileConfig.memory.maxTokens,
   };
   let maxTokens = fileConfig.memory.maxTokens;
-  let concurrency = fileConfig.maxConcurrency;
   let localConcurrency = fileConfig.localConcurrency;
   let timeoutSeconds = fileConfig.timeoutSeconds;
   let dagMode: "streaming" | "waves" = "streaming";
@@ -2701,8 +2747,6 @@ async function main() {
         maxTokens = parseInt(args[++i]);
         break;
       case "--concurrency":
-        concurrency = parseInt(args[++i]);
-        break;
       case "--local-concurrency":
         localConcurrency = parseInt(args[++i]);
         break;
@@ -2752,7 +2796,6 @@ async function main() {
     enableMemory,
     defaultMemoryStrategy: strategy,
     maxContextTokens: maxTokens,
-    maxConcurrency: concurrency,
     localConcurrency,
     timeoutSeconds,
     maxRetries: fileConfig.maxRetries,
