@@ -104,6 +104,11 @@ interface OrchestratorConfig {
   notifyOnComplete?: "none" | "sms" | "email";
   // v4.2: Composite routing strategy
   routingStrategy?: RoutingStrategy;
+  // v4.6: OmniRoute API-level failover
+  omniRouteEnabled?: boolean;
+  omniRouteUrl?: string;
+  omniRouteModel?: string;  // combo name, e.g. "swarm-failover"
+  omniRouteApiKey?: string;
 }
 
 interface CircuitBreaker {
@@ -454,6 +459,10 @@ const DEFAULT_CONFIG: OrchestratorConfig = {
   dagMode: "streaming",
   modelName: process.env.SWARM_MODEL_NAME || undefined,
   routingStrategy: (process.env.SWARM_ROUTING_STRATEGY as RoutingStrategy) || "balanced",
+  omniRouteEnabled: process.env.SWARM_OMNIROUTE_ENABLED !== "false",
+  omniRouteUrl: process.env.SWARM_OMNIROUTE_URL || "http://localhost:20128/v1/chat/completions",
+  omniRouteModel: process.env.SWARM_OMNIROUTE_MODEL || "swarm-failover",
+  omniRouteApiKey: process.env.SWARM_OMNIROUTE_API_KEY || undefined,
 };
 
 // ============================================================================
@@ -1012,6 +1021,30 @@ class TokenOptimizedOrchestrator {
       }
     }
 
+    // 8. v4.6: Check OmniRoute availability (best-effort, non-blocking)
+    if (this.config.omniRouteEnabled) {
+      try {
+        const baseUrl = this.config.omniRouteUrl!.replace("/chat/completions", "/models");
+        const resp = await fetch(baseUrl, { signal: AbortSignal.timeout(5000) });
+        if (resp.ok) {
+          const data: any = await resp.json();
+          const models = data.data?.map((m: any) => m.id) || [];
+          const hasCombo = models.includes(this.config.omniRouteModel);
+          if (hasCombo) {
+            console.log(`  🌐 OmniRoute: ${this.config.omniRouteModel} combo available (${models.length} models)`);
+          } else {
+            console.log(`  ⚠️  OmniRoute: combo "${this.config.omniRouteModel}" not found. Available: ${models.slice(0, 5).join(", ")}...`);
+          }
+        } else {
+          console.log(`  ⚠️  OmniRoute: health check failed (HTTP ${resp.status}) — failover disabled`);
+          this.config.omniRouteEnabled = false;
+        }
+      } catch {
+        console.log("  ⚠️  OmniRoute: not reachable — failover disabled for this run");
+        this.config.omniRouteEnabled = false;
+      }
+    }
+
     return { ok: errors.length === 0, errors };
   }
 
@@ -1063,6 +1096,19 @@ class TokenOptimizedOrchestrator {
 
     // Write initial progress
     this.writeProgress({ status: "started" });
+
+    // Persist swarm session to swarm-memory.db
+    if (this.memoryManager && (this.memoryManager as any).swarmMemory) {
+      try {
+        (this.memoryManager as any).swarmMemory.createSession(this.swarmId, this.sessionId, {
+          taskCount: tasks.length,
+          concurrency: this.config.localConcurrency,
+          dagMode: this.config.dagMode,
+        });
+      } catch (err) {
+        console.log(`  [swarm-memory] Failed to create session: ${err}`);
+      }
+    }
 
     // Validate personas
     this.validatePersonas(tasks);
@@ -1171,6 +1217,17 @@ class TokenOptimizedOrchestrator {
           episodeId,
           entities: [cat, ...(result.task.memoryMetadata?.tags || [])],
         });
+      }
+    }
+
+    // Update swarm session status in swarm-memory.db
+    if (this.memoryManager && (this.memoryManager as any).swarmMemory) {
+      try {
+        (this.memoryManager as any).swarmMemory.updateSessionStatus(this.swarmId,
+          overallOutcome === "success" ? "completed" : "failed"
+        );
+      } catch (err) {
+        console.log(`  [swarm-memory] Failed to update session: ${err}`);
       }
     }
 
@@ -1507,6 +1564,43 @@ class TokenOptimizedOrchestrator {
           console.log(`  ⏳ [${task.id}] Will reroute in ${delay}ms...`);
           await this.sleep(delay);
         } else {
+          // v4.6: OmniRoute last-resort fallback before giving up
+          if (this.config.omniRouteEnabled) {
+            try {
+              console.log(`  🌐 [${task.id}] All local executors exhausted, trying OmniRoute fallback...`);
+              const omniPrompt = await this.buildOptimizedPrompt(task);
+              const output = await this.callOmniRoute(omniPrompt, task.timeoutSeconds);
+              const outputTokens = this.estimateTokens(output);
+
+              this.logger.log("task_success_omniroute", { taskId: task.id, durationMs: Date.now() - startTime, outputTokens });
+
+              if (this.memoryManager) {
+                this.memoryManager.addAgentOutput("omniroute", output, {
+                  ...task.memoryMetadata,
+                  outputToMemory: task.outputToMemory,
+                });
+              }
+              this.completedOutputs.push({
+                persona: "omniroute",
+                category: task.memoryMetadata?.category || "general",
+                summary: output.slice(0, 200),
+              });
+
+              task.persona = originalPersona;
+              return {
+                task,
+                success: true,
+                output,
+                durationMs: Date.now() - startTime,
+                retries,
+                tokensUsed: this.estimateTokens(omniPrompt) + outputTokens,
+              };
+            } catch (omniError) {
+              console.log(`  ❌ [${task.id}] OmniRoute fallback also failed: ${omniError}`);
+              this.logger.log("omniroute_fallback_failed", { taskId: task.id, error: String(omniError) });
+            }
+          }
+
           task.persona = originalPersona;
           return {
             task,
@@ -1516,6 +1610,22 @@ class TokenOptimizedOrchestrator {
             retries: retries - 1,
           };
         }
+      }
+    }
+
+    // v4.6: OmniRoute last-resort for loop exhaustion (e.g. all circuits open)
+    if (this.config.omniRouteEnabled) {
+      try {
+        console.log(`  🌐 [${task.id}] Retry loop exhausted, trying OmniRoute fallback...`);
+        const omniPrompt = await this.buildOptimizedPrompt(task);
+        const output = await this.callOmniRoute(omniPrompt, task.timeoutSeconds);
+
+        this.logger.log("task_success_omniroute", { taskId: task.id, durationMs: Date.now() - startTime });
+        task.persona = originalPersona;
+        return { task, success: true, output, durationMs: Date.now() - startTime, retries };
+      } catch (omniError) {
+        console.log(`  ❌ [${task.id}] OmniRoute fallback also failed: ${omniError}`);
+        this.logger.log("omniroute_fallback_failed", { taskId: task.id, error: String(omniError) });
       }
     }
 
@@ -1783,6 +1893,80 @@ CRITICAL RULES:
     const result = await Promise.race([execPromise, timeoutPromise]);
     this.logger.log("local_executor_complete", { executor: executor.id, outputLength: result.length });
     return result;
+  }
+
+  /**
+   * v4.6: OmniRoute API-level failover — called as last resort when all local
+   * executors have been exhausted. Routes through OmniRoute's priority combo
+   * which handles provider-level failover (e.g. Anthropic → OpenAI → free tiers).
+   */
+  private async callOmniRoute(prompt: string, taskTimeoutSeconds?: number): Promise<string> {
+    const url = this.config.omniRouteUrl!;
+    const model = this.config.omniRouteModel!;
+    const effectiveTimeout = (taskTimeoutSeconds || this.config.timeoutSeconds) * 1000;
+
+    // Resolve API key: config → env file → error
+    let apiKey = this.config.omniRouteApiKey;
+    if (!apiKey) {
+      try {
+        const envContent = readFileSync(join(WORKSPACE, "OmniRoute", ".env"), "utf-8");
+        const match = envContent.match(/^API_KEY_SECRET=(.+)$/m);
+        if (match) apiKey = match[1].trim();
+      } catch { /* ignore */ }
+    }
+    if (!apiKey) {
+      throw new Error("OmniRoute API key not found. Set SWARM_OMNIROUTE_API_KEY or ensure OmniRoute/.env has API_KEY_SECRET.");
+    }
+
+    console.log(`  🌐 [omniroute] Fallback via OmniRoute combo: ${model}`);
+    this.logger.log("omniroute_fallback_start", { model, url });
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), effectiveTimeout);
+
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: 16384,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        throw new Error(`OmniRoute HTTP ${resp.status}: ${body.slice(0, 300)}`);
+      }
+
+      const data: any = await resp.json();
+
+      // Handle both OpenAI and Anthropic response formats
+      let output = "";
+      if (data.choices?.[0]?.message?.content) {
+        output = data.choices[0].message.content;
+      } else if (data.content?.[0]?.text) {
+        output = data.content[0].text;
+      } else if (typeof data.output === "string") {
+        output = data.output;
+      }
+
+      if (!output) {
+        throw new Error(`OmniRoute returned empty response: ${JSON.stringify(data).slice(0, 300)}`);
+      }
+
+      const routedModel = data.model || data.choices?.[0]?.model || model;
+      console.log(`  ✅ [omniroute] Success via ${routedModel} (${output.length} chars)`);
+      this.logger.log("omniroute_fallback_success", { model: routedModel, outputLength: output.length });
+      return output.trim();
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // --------------------------------------------------------------------------

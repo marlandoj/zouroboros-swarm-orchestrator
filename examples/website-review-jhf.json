@@ -30,7 +30,7 @@
   {
     "id": "accessibility-audit",
     "persona": "frontend-developer",
-    "task": "Analyze https://app.jacksonheritagefinancial.com for accessibility compliance. Fetch the homepage and check WCAG 2.1 AA conformance: semantic HTML structure, ARIA usage, keyboard navigation indicators, color contrast, focus management, alt text on images, form labels, and screen reader compatibility. Financial services sites must be ADA-compliant. Provide specific code-level findings with severity ratings.",
+    "task": "Analyze https://app.jacksonheritagefinancial.com for accessibility compliance. Fetch the homepage and check WCAG 2.1 AA conformance: semantic HTML structure, ARIA usage, keyboard navigation indicators, color contrast, focus management, alt text on images, form labels, and screen reader compatibility. Financial services sites must be ADA-compliant. Provide specific code-level findings with severity ratings. OUTPUT REQUIREMENT: You MUST produce a comprehensive report of at least 2000 characters with detailed findings, code snippets, and remediation steps for each issue.",
     "priority": "high",
     "dependsOn": ["plan"],
     "contextAccess": "read",
@@ -45,7 +45,7 @@
   {
     "id": "security-audit",
     "persona": "security-engineer",
-    "task": "Perform a security review of https://app.jacksonheritagefinancial.com. Fetch the homepage and assess: HTTPS configuration, security headers (CSP, HSTS, X-Frame-Options, X-Content-Type-Options), cookie security flags, form handling, third-party script risks, and financial data protection indicators. As a financial services site, security is critical for client trust and regulatory compliance. Provide P0-P3 severity ratings with remediation steps.",
+    "task": "Perform a security review of https://app.jacksonheritagefinancial.com. Fetch the homepage and assess: HTTPS configuration, security headers (CSP, HSTS, X-Frame-Options, X-Content-Type-Options), cookie security flags, form handling, third-party script risks, and financial data protection indicators. As a financial services site, security is critical for client trust and regulatory compliance. Provide P0-P3 severity ratings with remediation steps. OUTPUT REQUIREMENT: You MUST produce a comprehensive report of at least 2000 characters with detailed findings, specific header values observed, and step-by-step remediation instructions.",
     "priority": "critical",
     "dependsOn": ["plan"],
     "contextAccess": "read",
@@ -75,7 +75,7 @@
   {
     "id": "seo-audit",
     "persona": "research-analyst",
-    "task": "Perform an SEO audit of https://app.jacksonheritagefinancial.com. Fetch the homepage and analyze: title tags, meta descriptions, structured data/schema markup (especially FinancialService, LocalBusiness), Open Graph tags, canonical URLs, heading hierarchy (H1-H6), internal linking structure, mobile-friendliness signals, and content quality for financial services SEO. Provide actionable recommendations ranked by impact.",
+    "task": "Perform an SEO audit of https://app.jacksonheritagefinancial.com. Fetch the homepage and analyze: title tags, meta descriptions, structured data/schema markup (especially FinancialService, LocalBusiness), Open Graph tags, canonical URLs, heading hierarchy (H1-H6), internal linking structure, mobile-friendliness signals, and content quality for financial services SEO. Provide actionable recommendations ranked by impact. OUTPUT REQUIREMENT: You MUST produce a comprehensive report of at least 2000 characters with specific tag values found, missing elements, and prioritized recommendations with implementation examples.",
     "priority": "high",
     "dependsOn": ["plan"],
     "contextAccess": "read",
@@ -90,7 +90,7 @@
   {
     "id": "compliance-audit",
     "persona": "research-analyst",
-    "task": "Review https://app.jacksonheritagefinancial.com for financial services compliance and regulatory content. Fetch the homepage and key pages. Check for: SEC/FINRA disclaimer presence and accuracy, fiduciary disclosure, ADV brochure availability, privacy policy (Reg S-P), CRS (Client Relationship Summary) accessibility, fee transparency, risk disclosures, and general regulatory language. This is NOT legal advice but a content-level compliance scan. Provide P0-P3 severity findings.",
+    "task": "Review https://app.jacksonheritagefinancial.com for financial services compliance and regulatory content. Fetch the homepage and key pages. Check for: SEC/FINRA disclaimer presence and accuracy, fiduciary disclosure, ADV brochure availability, privacy policy (Reg S-P), CRS (Client Relationship Summary) accessibility, fee transparency, risk disclosures, and general regulatory language. This is NOT legal advice but a content-level compliance scan. Provide P0-P3 severity findings. OUTPUT REQUIREMENT: You MUST produce a comprehensive report of at least 2000 characters with specific compliance items found or missing, exact locations, and remediation guidance.",
     "priority": "critical",
     "dependsOn": ["plan"],
     "contextAccess": "read",

@@ -30,7 +30,7 @@
   {
     "id": "accessibility-audit",
     "persona": "hermes",
-    "task": "Analyze https://faunaflorabotanicals.com for accessibility compliance. Fetch the homepage and check WCAG 2.1 AA conformance: semantic HTML structure, ARIA usage, keyboard navigation indicators, color contrast, focus management, alt text on images, form labels, and screen reader compatibility. Provide specific code-level findings with severity ratings.",
+    "task": "Analyze https://faunaflorabotanicals.com for accessibility compliance. Fetch the homepage and check WCAG 2.1 AA conformance: semantic HTML structure, ARIA usage, keyboard navigation indicators, color contrast, focus management, alt text on images, form labels, and screen reader compatibility. Provide specific code-level findings with severity ratings. OUTPUT REQUIREMENT: You MUST produce a comprehensive report of at least 2000 characters with detailed findings, code snippets, and remediation steps for each issue.",
     "priority": "high",
     "dependsOn": ["plan"],
     "contextAccess": "read",
@@ -45,7 +45,7 @@
   {
     "id": "security-audit",
     "persona": "hermes",
-    "task": "Perform a security review of https://faunaflorabotanicals.com. Fetch the homepage and assess: HTTPS configuration, security headers (CSP, HSTS, X-Frame-Options, X-Content-Type-Options), cookie security flags, form handling, third-party script risks, and e-commerce payment security indicators. Provide P0-P3 severity ratings with remediation steps.",
+    "task": "Perform a security review of https://faunaflorabotanicals.com. Fetch the homepage and assess: HTTPS configuration, security headers (CSP, HSTS, X-Frame-Options, X-Content-Type-Options), cookie security flags, form handling, third-party script risks, and e-commerce payment security indicators. Provide P0-P3 severity ratings with remediation steps. OUTPUT REQUIREMENT: You MUST produce a comprehensive report of at least 2000 characters with detailed findings, specific header values observed, and step-by-step remediation instructions.",
     "priority": "critical",
     "dependsOn": ["plan"],
     "contextAccess": "read",
@@ -75,7 +75,7 @@
   {
     "id": "seo-audit",
     "persona": "hermes",
-    "task": "Perform an SEO audit of https://faunaflorabotanicals.com. Fetch the homepage and analyze: title tags, meta descriptions, structured data/schema markup, Open Graph tags, canonical URLs, heading hierarchy (H1-H6), internal linking structure, mobile-friendliness signals, and content quality. Provide actionable recommendations ranked by impact.",
+    "task": "Perform an SEO audit of https://faunaflorabotanicals.com. Fetch the homepage and analyze: title tags, meta descriptions, structured data/schema markup, Open Graph tags, canonical URLs, heading hierarchy (H1-H6), internal linking structure, mobile-friendliness signals, and content quality. Provide actionable recommendations ranked by impact. OUTPUT REQUIREMENT: You MUST produce a comprehensive report of at least 2000 characters with specific tag values found, missing elements, and prioritized recommendations with implementation examples.",
     "priority": "high",
     "dependsOn": ["plan"],
     "contextAccess": "read",

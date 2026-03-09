@@ -98,30 +98,55 @@ bun ~/Skills/zo-memory-system/scripts/memory.ts profile --executor gemini
 bun ~/Skills/zo-memory-system/scripts/memory.ts procedures --evolve "site-review"
 ```
 
-## Architecture (v4.4.0 — Local Executors Only)
+## Architecture (v4.6.0 — Local Executors + OmniRoute Failover)
 
-As of v4.4.0, all tasks are executed via local executor bridges (claude-code, hermes, gemini, codex).
-No remote API calls (zo/ask, Anthropic Direct) are used. This eliminates API latency as a bottleneck
-and removes the need for API credentials.
+Primary path: all tasks execute via local executor bridges (claude-code, hermes, gemini, codex).
+When all local executors exhaust retries, OmniRoute provides API-level failover through a
+priority combo that chains multiple providers (paid → free tiers).
 
 ```
-BEFORE (v4.3)                  AFTER (v4.4)
-─────────────                  ─────────────
-3 execution paths              1 execution path (local bridges)
-  - Local executor               - Local executor only
-  - Anthropic Direct API
-  - Zo API fallback
-Dual concurrency channels      Single concurrency channel
-  - maxConcurrency (API)          - localConcurrency
-  - localConcurrency (local)
-API credentials required       No API credentials needed
+v4.4 (local only)              v4.6 (local + OmniRoute failover)
+─────────────────              ─────────────────────────────────
+1 execution path               2 execution paths
+  - Local executor only          - Local executor (primary)
+                                 - OmniRoute API failover (last resort)
+On failure: retry same          On failure: retry local → reroute local → OmniRoute
+  or reroute to different         combo with provider-level failover
+  local executor
 ```
+
+### OmniRoute Integration (v4.6)
+
+OmniRoute runs at `http://localhost:20128` and exposes an OpenAI-compatible `/v1` endpoint.
+The `swarm-failover` combo provides priority-based provider failover.
+
+**Flow:**
+1. Task routed to best local executor (composite router)
+2. On failure → reroute to next-best local executor (existing behavior)
+3. All local retries exhausted → **OmniRoute fallback** via `swarm-failover` combo
+4. OmniRoute tries providers in priority order (e.g. Anthropic → OpenAI → free tiers)
+
+**Environment variables:**
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWARM_OMNIROUTE_ENABLED` | `true` | Set to `false` to disable OmniRoute fallback |
+| `SWARM_OMNIROUTE_URL` | `http://localhost:20128/v1/chat/completions` | OmniRoute endpoint |
+| `SWARM_OMNIROUTE_MODEL` | `swarm-failover` | Combo name to use |
+| `SWARM_OMNIROUTE_API_KEY` | (from OmniRoute/.env) | API key (auto-resolved from `API_KEY_SECRET` in OmniRoute/.env) |
+
+**Important:** OmniRoute is a text-only API fallback. It cannot execute tools, read files, or
+run commands. Tasks that require file mutations will likely fail via OmniRoute. It's most useful
+for analysis, review, and synthesis tasks.
+
+**Preflight:** The orchestrator checks OmniRoute reachability during preflight. If unreachable,
+`omniRouteEnabled` is automatically set to `false` for that run (non-blocking warning).
 
 ### Key Features
 
 | Feature | Implementation | Benefit |
 |---------|---------------|---------|
 | Local Executors | Bridge scripts (bash) | No API latency, full local control |
+| OmniRoute Failover | HTTP POST to `/v1/chat/completions` | API-level provider failover as last resort |
 | DAG Streaming | Promise.race loop | Tasks start immediately when deps resolve |
 | Circuit Breaker | `failures >= 2` | Prevents cascading failures |
 | Priority Queue | Sort by critical/high/medium/low | Important tasks complete first |

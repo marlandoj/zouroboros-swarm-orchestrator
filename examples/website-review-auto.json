@@ -30,7 +30,7 @@
   {
     "id": "security-audit",
     "persona": "auto",
-    "task": "Perform a security review and vulnerability assessment. Check HTTPS configuration, security headers (CSP, HSTS), cookie security, form handling, third-party script risks, and compliance. Provide P0-P3 severity ratings with remediation steps.",
+    "task": "Perform a security review and vulnerability assessment. Check HTTPS configuration, security headers (CSP, HSTS), cookie security, form handling, third-party script risks, and compliance. Provide P0-P3 severity ratings with remediation steps. OUTPUT REQUIREMENT: You MUST produce a comprehensive report of at least 2000 characters with detailed findings, specific header values observed, and step-by-step remediation instructions.",
     "priority": "critical",
     "dependsOn": ["plan"],
     "contextAccess": "read",
