@@ -77,6 +77,11 @@ interface Task {
     file: string;
     contains: string;
   }>;
+
+  // v4.7: Per-task model/combo override — routes through this OmniRoute combo
+  // instead of the tier-based default. Accepts any combo name (e.g. "swarm-heavy")
+  // or direct model alias (e.g. "cc/claude-sonnet-4-5-20250929").
+  model?: string;
 }
 
 interface TaskResult {
@@ -201,6 +206,23 @@ function estimateComplexity(task: Task): ComplexityEstimate {
 
 function complexityFitScore(executorId: string, complexity: ComplexityTier): number {
   return COMPLEXITY_AFFINITY[executorId]?.[complexity] ?? 0.5;
+}
+
+// ============================================================================
+// v4.7: TIERED MODEL ROUTING — maps complexity to OmniRoute combos
+// ============================================================================
+
+const TIER_TO_COMBO: Record<ComplexityTier, string> = {
+  trivial:  "swarm-light",
+  simple:   "swarm-light",
+  moderate: "swarm-mid",
+  complex:  "swarm-heavy",
+};
+
+function resolveModelForTask(task: Task): string {
+  if (task.model) return task.model;
+  const { tier } = estimateComplexity(task);
+  return TIER_TO_COMBO[tier];
 }
 
 // ============================================================================
@@ -1433,6 +1455,7 @@ class TokenOptimizedOrchestrator {
     const triedExecutors = new Set<string>();
     const category = task.memoryMetadata?.category || "general";
     const originalPersona = task.persona;
+    const resolvedModel = resolveModelForTask(task);
 
     while (retries <= this.config.maxRetries) {
       // --- Executor selection (v4.2 retry-with-reroute) ---
@@ -1484,7 +1507,8 @@ class TokenOptimizedOrchestrator {
         console.log(`  🚀 [${task.id}] ${executorId} (attempt ${retries + 1}) ~${promptTokens} tokens`);
         this.logger.log("task_start", { taskId: task.id, persona: executorId, attempt: retries + 1, promptTokens });
 
-        const output = await this.callAgent(executorId, prompt, task.timeoutSeconds);
+        console.log(`  💰 [${task.id}] Model tier: ${resolvedModel}${task.model ? " (per-task override)" : ""}`);
+        const output = await this.callAgent(executorId, prompt, task.timeoutSeconds, resolvedModel);
         const outputTokens = this.estimateTokens(output);
 
         // R3: Post-mutation verification — check expected file changes were applied
@@ -1569,7 +1593,7 @@ class TokenOptimizedOrchestrator {
             try {
               console.log(`  🌐 [${task.id}] All local executors exhausted, trying OmniRoute fallback...`);
               const omniPrompt = await this.buildOptimizedPrompt(task);
-              const output = await this.callOmniRoute(omniPrompt, task.timeoutSeconds);
+              const output = await this.callOmniRoute(omniPrompt, task.timeoutSeconds, resolvedModel);
               const outputTokens = this.estimateTokens(output);
 
               this.logger.log("task_success_omniroute", { taskId: task.id, durationMs: Date.now() - startTime, outputTokens });
@@ -1618,7 +1642,7 @@ class TokenOptimizedOrchestrator {
       try {
         console.log(`  🌐 [${task.id}] Retry loop exhausted, trying OmniRoute fallback...`);
         const omniPrompt = await this.buildOptimizedPrompt(task);
-        const output = await this.callOmniRoute(omniPrompt, task.timeoutSeconds);
+        const output = await this.callOmniRoute(omniPrompt, task.timeoutSeconds, resolvedModel);
 
         this.logger.log("task_success_omniroute", { taskId: task.id, durationMs: Date.now() - startTime });
         task.persona = originalPersona;
@@ -1845,15 +1869,15 @@ CRITICAL RULES:
   // AGENT COMMUNICATION
   // --------------------------------------------------------------------------
 
-  private async callAgent(persona: string, prompt: string, taskTimeoutSeconds?: number): Promise<string> {
+  private async callAgent(persona: string, prompt: string, taskTimeoutSeconds?: number, resolvedModel?: string): Promise<string> {
     const localExec = this.localExecutors.get(persona);
     if (!localExec) {
       throw new Error(`No local executor found for persona: ${persona}. Register an executor in the executor registry.`);
     }
-    return this.callLocalAgent(localExec, prompt, taskTimeoutSeconds);
+    return this.callLocalAgent(localExec, prompt, taskTimeoutSeconds, resolvedModel);
   }
 
-  private async callLocalAgent(executor: LocalExecutor, prompt: string, taskTimeoutSeconds?: number): Promise<string> {
+  private async callLocalAgent(executor: LocalExecutor, prompt: string, taskTimeoutSeconds?: number, resolvedModel?: string): Promise<string> {
     const effectiveTimeout = taskTimeoutSeconds || this.config.timeoutSeconds;
     const timeoutMs = effectiveTimeout * 1000;
 
@@ -1861,38 +1885,38 @@ CRITICAL RULES:
       throw new Error(`Local executor bridge not found: ${executor.bridge}`);
     }
 
-    console.log(`  🖥️  [${executor.id}] Routing to local executor: ${executor.name}`);
-    this.logger.log("local_executor_start", { executor: executor.id, bridge: executor.bridge });
+    const modelLabel = resolvedModel || "default";
+    console.log(`  🖥️  [${executor.id}] Routing to local executor: ${executor.name} (model: ${modelLabel})`);
+    this.logger.log("local_executor_start", { executor: executor.id, bridge: executor.bridge, model: modelLabel });
+
+    const bridgeEnv: Record<string, string | undefined> = { ...process.env };
+    if (resolvedModel) {
+      bridgeEnv.SWARM_RESOLVED_MODEL = resolvedModel;
+      bridgeEnv.CLAUDE_CODE_MODEL = resolvedModel;
+      bridgeEnv.CODEX_MODEL = resolvedModel;
+      bridgeEnv.LLM_MODEL = resolvedModel;
+      bridgeEnv.GEMINI_MODEL = resolvedModel;
+    }
 
     const proc = Bun.spawn(["bash", executor.bridge, prompt], {
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env },
+      env: bridgeEnv,
     });
 
-    const execPromise = (async () => {
-      // Read stdout and stderr concurrently to avoid deadlock
-      const [output, stderr, exitCode] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
-      if (exitCode !== 0) {
-        throw new Error(`Local executor ${executor.id} exited with code ${exitCode}: ${stderr.slice(0, 500)}`);
-      }
-      return output.trim();
-    })();
+    // Read stdout and stderr concurrently to avoid deadlock
+    const [output, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
 
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
-        proc.kill();
-        reject(new Error(`Local executor ${executor.id} timed out after ${effectiveTimeout}s`));
-      }, timeoutMs);
-    });
+    if (exitCode !== 0) {
+      throw new Error(`Local executor ${executor.id} exited with code ${exitCode}: ${stderr.slice(0, 500)}`);
+    }
 
-    const result = await Promise.race([execPromise, timeoutPromise]);
-    this.logger.log("local_executor_complete", { executor: executor.id, outputLength: result.length });
-    return result;
+    this.logger.log("local_executor_complete", { executor: executor.id, outputLength: output.length });
+    return output.trim();
   }
 
   /**
@@ -1900,9 +1924,9 @@ CRITICAL RULES:
    * executors have been exhausted. Routes through OmniRoute's priority combo
    * which handles provider-level failover (e.g. Anthropic → OpenAI → free tiers).
    */
-  private async callOmniRoute(prompt: string, taskTimeoutSeconds?: number): Promise<string> {
+  private async callOmniRoute(prompt: string, taskTimeoutSeconds?: number, resolvedModel?: string): Promise<string> {
     const url = this.config.omniRouteUrl!;
-    const model = this.config.omniRouteModel!;
+    const model = resolvedModel || this.config.omniRouteModel!;
     const effectiveTimeout = (taskTimeoutSeconds || this.config.timeoutSeconds) * 1000;
 
     // Resolve API key: config → env file → error
