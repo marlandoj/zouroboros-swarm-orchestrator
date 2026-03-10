@@ -14,7 +14,7 @@
   {
     "id": "moderate-auto",
     "persona": "auto",
-    "task": "Analyze the website at faunaflorabotanicals.com. Review the homepage design, check navigation structure, evaluate mobile responsiveness, and assess overall UX quality. Provide 3 key findings.",
+    "task": "Analyze the website at verdantgoods.com. Review the homepage design, check navigation structure, evaluate mobile responsiveness, and assess overall UX quality. Provide 3 key findings.",
     "priority": "high",
     "dependsOn": ["trivial-auto"],
     "memoryStrategy": "none",
@@ -27,7 +27,7 @@
   {
     "id": "complex-auto",
     "persona": "auto",
-    "task": "Perform a comprehensive security audit of faunaflorabotanicals.com. First, analyze the HTTPS configuration and security headers. Then check for CSP policy, HSTS headers, cookie security attributes. Next, review form handling for CSRF protection. Finally, assess third-party script risks and compare against OWASP top 10 best practices. Use curl to inspect headers. Provide severity-rated findings (P0-P3) with specific remediation steps for each issue found.",
+    "task": "Perform a comprehensive security audit of verdantgoods.com. First, analyze the HTTPS configuration and security headers. Then check for CSP policy, HSTS headers, cookie security attributes. Next, review form handling for CSRF protection. Finally, assess third-party script risks and compare against OWASP top 10 best practices. Use curl to inspect headers. Provide severity-rated findings (P0-P3) with specific remediation steps for each issue found.",
     "priority": "critical",
     "dependsOn": ["trivial-auto"],
     "memoryStrategy": "none",

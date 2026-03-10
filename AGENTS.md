@@ -32,8 +32,8 @@
   "priority": "high",
   "timeoutSeconds": 120,
   "expectedMutations": [
-    { "file": "/home/workspace/fauna-flora-store/server/index.ts", "contains": "compression()" },
-    { "file": "/home/workspace/fauna-flora-store/package.json", "contains": "\"compression\"" }
+    { "file": "/home/workspace/verdant-goods-store/server/index.ts", "contains": "compression()" },
+    { "file": "/home/workspace/verdant-goods-store/package.json", "contains": "\"compression\"" }
   ]
 }
 ```

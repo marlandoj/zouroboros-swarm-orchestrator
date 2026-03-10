@@ -105,7 +105,7 @@
   {
     "id": "synthesis",
     "persona": "product-manager",
-    "task": "Synthesize ALL prior specialist findings (UX, accessibility, security, performance, SEO, compliance) into a comprehensive executive report for Jackson Heritage Financial. Include: 1) Overall site health score (1-10) with justification, 2) Top 5 critical issues requiring immediate attention (P0/P1), 3) Top 5 quick wins (high impact, low effort), 4) Prioritized roadmap grouped into Sprint 1 (critical), Sprint 2 (high), Sprint 3 (medium), 5) Resource and effort estimates per sprint, 6) Financial-services-specific recommendations for trust and compliance. Format as a professional report with clear headers and tables.",
+    "task": "Synthesize ALL prior specialist findings (UX, accessibility, security, performance, SEO, compliance) into a comprehensive executive report for Summit Ridge Advisors. Include: 1) Overall site health score (1-10) with justification, 2) Top 5 critical issues requiring immediate attention (P0/P1), 3) Top 5 quick wins (high impact, low effort), 4) Prioritized roadmap grouped into Sprint 1 (critical), Sprint 2 (high), Sprint 3 (medium), 5) Resource and effort estimates per sprint, 6) Financial-services-specific recommendations for trust and compliance. Format as a professional report with clear headers and tables.",
     "priority": "critical",
     "dependsOn": ["ux-audit", "accessibility-audit", "security-audit", "performance-audit", "seo-audit", "compliance-audit"],
     "contextAccess": "read",

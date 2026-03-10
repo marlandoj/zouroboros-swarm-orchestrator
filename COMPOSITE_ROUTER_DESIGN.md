@@ -422,7 +422,7 @@ Allow campaigns to declare a routing strategy that shifts the weights:
 
 ```json
 {
-  "swarmId": "ffb-sprint-4",
+  "swarmId": "vgc-sprint-4",
   "routingStrategy": "reliable",
   "tasks": [...]
 }
@@ -491,7 +491,7 @@ All fields optional — missing values fall back to defaults.
 
 | Step | What |
 |------|------|
-| 4a | Run FFB workload with `"routingStrategy": "balanced"` — compare to baseline |
+| 4a | Run VGC workload with `"routingStrategy": "balanced"` — compare to baseline |
 | 4b | Simulate executor failure (kill bridge mid-run) — verify reroute happens |
 | 4c | Run 3 campaigns to seed history, verify history file populates |
 | 4d | Compare wall-clock time across strategies: fast vs reliable vs balanced |

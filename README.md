@@ -30,7 +30,7 @@ There are two ways to use this skill: through the **Zo chat window** (natural la
 The fastest way. Open your Zo chat window and describe what you want:
 
 ```
-Run a swarm to review my e-commerce website at fauna-flora-store.
+Run a swarm to review my e-commerce website at verdant-goods-store.
 Have a security engineer audit the code, a frontend developer review the UX,
 and a product manager synthesize the findings into a report.
 ```
@@ -187,7 +187,7 @@ Six ready-to-use analysis patterns:
 Use them via Zo chat:
 
 ```
-Run a website-review swarm pattern against my fauna-flora-store project.
+Run a website-review swarm pattern against my verdant-goods-store project.
 Run an incident-postmortem for the outage we had yesterday.
 ```
 
@@ -206,7 +206,7 @@ bun orchestrate-v4.ts assets/swarm-patterns.json --pattern website-review --swar
 ```
 Review the Fauna & Flora website. Have a security engineer check the code,
 a frontend developer review accessibility, and a writer create a summary report.
-Save the report to Reports/ffb-audit.md.
+Save the report to Reports/vgc-audit.md.
 ```
 
 ### Example 2: Research team (Zo chat)
@@ -238,7 +238,7 @@ bun orchestrate-v4.ts ../tasks/code-review.json --swarm-id code-review
 
 ```bash
 bun orchestrate-v4.ts tasks/full-review.json \
-  --swarm-id ffb-sprint-4 \
+  --swarm-id vgc-sprint-4 \
   --strategy hierarchical \
   --max-tokens 8000 \
   --routing-strategy reliable \
