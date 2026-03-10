@@ -2,7 +2,7 @@
 
 > Coordinate multiple AI agents in parallel on [Zo Computer](https://zo.computer). Define tasks, declare dependencies, and let the orchestrator route work to the right agent with automatic memory management, retries, and structured logging.
 
-[![Version](https://img.shields.io/badge/version-4.5.0_Memory--Enriched_Routing-blue?style=flat-square)](https://github.com/marlandoj/zo-swarm-orchestrator)
+[![Version](https://img.shields.io/badge/version-4.7.0_Tiered_Model_Routing-blue?style=flat-square)](https://github.com/marlandoj/zo-swarm-orchestrator)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
@@ -138,6 +138,56 @@ The routing improves with use. After a few runs, tasks flow to whichever executo
 ```bash
 bun orchestrate-v4.ts tasks.json --routing-strategy reliable
 ```
+
+---
+
+## Model Routing via OmniRoute
+
+> Powered by [OmniRoute](https://github.com/diegosouzapw/OmniRoute) — a unified AI proxy/router for multi-provider LLM aggregation.
+
+The orchestrator uses **tiered OmniRoute combos** to match model cost to task complexity. Instead of sending every task to the same expensive model, it auto-selects a budget-appropriate combo based on the task's complexity score.
+
+### How it works
+
+Each task is scored on 5 signals (word count, file references, multi-step instructions, tool usage, analysis keywords) to produce a complexity tier. The tier maps to an OmniRoute combo:
+
+| Complexity | Combo | Models (priority failover) |
+|------------|-------|---------------------------|
+| **trivial** | `swarm-light` | Gemini Flash → Haiku → DeepSeek → free tier |
+| **simple** | `swarm-light` | *(same as above)* |
+| **moderate** | `swarm-mid` | Sonnet → Gemini Pro → GPT-4.1 |
+| **complex** | `swarm-heavy` | Opus → Sonnet → Gemini Pro → Codex |
+
+Each combo is a priority failover chain — if the first provider is down or rate-limited, OmniRoute automatically tries the next one.
+
+### Per-task model override
+
+Any task can pin itself to a specific combo or model alias, bypassing the automatic tier:
+
+```json
+{
+  "id": "critical-review",
+  "persona": "auto",
+  "task": "Deep security audit of the authentication system",
+  "priority": "critical",
+  "model": "swarm-heavy"
+}
+```
+
+The `model` field accepts any OmniRoute combo name (`swarm-light`, `swarm-mid`, `swarm-heavy`) or a direct model alias (`cc/claude-sonnet-4-5-20250929`).
+
+### OmniRoute as last-resort fallback
+
+When all local executors fail (circuit breakers open, timeouts, crashes), the orchestrator falls back to OmniRoute's HTTP API as a final attempt before marking the task as failed. The fallback uses the same tier-resolved model — a trivial task won't suddenly burn Opus tokens just because the local bridge crashed.
+
+### Environment variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SWARM_OMNIROUTE_ENABLED` | Enable OmniRoute integration | `true` |
+| `SWARM_OMNIROUTE_URL` | OmniRoute chat completions endpoint | `http://localhost:20128/v1/chat/completions` |
+| `SWARM_OMNIROUTE_MODEL` | Global fallback combo (when no tier resolves) | `swarm-failover` |
+| `SWARM_OMNIROUTE_API_KEY` | API key for OmniRoute | reads from `OmniRoute/.env` |
 
 ---
 
