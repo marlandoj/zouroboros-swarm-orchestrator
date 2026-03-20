@@ -2,7 +2,7 @@
 
 > Coordinate multiple AI agents in parallel on [Zo Computer](https://zo.computer). Define tasks, declare dependencies, and let the orchestrator route work to the right agent with automatic memory management, retries, and structured logging.
 
-[![Version](https://img.shields.io/badge/version-4.7.0_Tiered_Model_Routing-blue?style=flat-square)](https://github.com/marlandoj/zo-swarm-orchestrator)
+[![Version](https://img.shields.io/badge/version-4.9.0_Dynamic_OmniRoute_Resolution-blue?style=flat-square)](https://github.com/marlandoj/zo-swarm-orchestrator)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
@@ -145,11 +145,33 @@ bun orchestrate-v4.ts tasks.json --routing-strategy reliable
 
 > Powered by [OmniRoute](https://github.com/diegosouzapw/OmniRoute) — a unified AI proxy/router for multi-provider LLM aggregation.
 
-The orchestrator uses **tiered OmniRoute combos** to match model cost to task complexity. Instead of sending every task to the same expensive model, it auto-selects a budget-appropriate combo based on the task's complexity score.
+The orchestrator uses **dynamic OmniRoute resolution** via `tier-resolve-v2.ts` to match model cost to task complexity. Instead of sending every task to the same expensive model, it analyzes the prompt with a 9-signal complexity estimator and selects the optimal OmniRoute combo.
 
 ### How it works
 
-Each task is scored on 5 signals (word count, file references, multi-step instructions, tool usage, analysis keywords) to produce a complexity tier. The tier maps to an OmniRoute combo:
+Every task prompt is analyzed by the tier-resolve engine, which produces a complexity score from 9 calibrated weighted signals:
+
+| Signal | Weight | What it measures |
+|--------|--------|-----------------|
+| **conceptCount** | 0.20 | Distinct technical concepts referenced |
+| **featureListCount** | 0.20 | Enumerated requirements or features |
+| **scopeBreadth** | 0.12 | Cross-system or cross-file scope |
+| **multiStep** | 0.10 | Sequential instruction chains (then/after/next) |
+| **taskVerbComplexity** | 0.10 | Verb sophistication (fix vs. architect vs. redesign) |
+| **analysisDepth** | 0.08 | Depth of reasoning required |
+| **wordCount** | 0.04 | Raw prompt length |
+| **toolUsage** | 0.04 | Tool invocations implied |
+| **fileRefs** | 0.02 | File paths or code references |
+
+On top of the base signals, the engine applies:
+
+- **Domain detection** -- 22 tech patterns (react, docker, kubernetes, oauth, jwt, security, etc.) that adjust complexity
+- **Heuristic boosters** -- Codebase-wide refactor (+0.25), cross-system audit (+0.20), ML deployment (+0.15), production-ready (+0.10)
+- **Task-type complexity floors** -- Security, devops, data_science, and analysis tasks are floored at `moderate`; debugging and planning at `simple`
+- **Semantic task classification** -- 11 task types (coding, review, planning, analysis, debugging, documentation, general, data_science, devops, security, content) via keyword/synonym/contextual matching
+- **Feedback loop** -- Auto-tuned weights from `data/weights.json` based on past resolution accuracy
+
+The complexity score maps to a tier, which resolves to an OmniRoute combo:
 
 | Complexity | Combo | Models (priority failover) |
 |------------|-------|---------------------------|
@@ -158,7 +180,24 @@ Each task is scored on 5 signals (word count, file references, multi-step instru
 | **moderate** | `swarm-mid` | Sonnet → Gemini Pro → GPT-4.1 |
 | **complex** | `swarm-heavy` | Opus → Sonnet → Gemini Pro → Codex |
 
-Each combo is a priority failover chain — if the first provider is down or rate-limited, OmniRoute automatically tries the next one.
+If OmniRoute is reachable, `bestComboForTask()` queries available combos and scores them for the specific task type and tier — potentially selecting a combo outside the static mapping if it scores higher. Each combo is a priority failover chain.
+
+### Resolution in bridge scripts
+
+All four executor bridges (Claude Code, Codex, Gemini, Hermes) invoke the tier-resolve engine independently with a 15-second timeout. The resolution chain per bridge:
+
+1. **OmniRoute dynamic** -- `tier-resolve.ts --omniroute "$PROMPT" --json` selects the optimal combo
+2. **Environment override** -- `SWARM_RESOLVED_MODEL` (set by orchestrator per task)
+3. **Static tier mapping** -- Swarm tier names mapped to executor-native models
+4. **CLI default** -- Executor's built-in default model
+
+Per-tier timeouts are applied after resolution:
+
+| Tier | Timeout |
+|------|---------|
+| trivial / swarm-light | 120s |
+| simple / moderate / swarm-mid | 300s |
+| complex / swarm-heavy | 600s |
 
 ### Per-task model override
 
@@ -354,12 +393,17 @@ Full list in [`SKILL.md`](SKILL.md).
 
 ```
 zo-swarm-orchestrator/
-├── SKILL.md                          # Full documentation (v4.5)
+├── SKILL.md                          # Full documentation (v4.9)
 ├── README.md                         # This file
 ├── config.json                       # Runtime configuration
 ├── AGENTS.md                         # Production lessons and patterns
+├── CHANGELOG.md                      # Version history
 ├── scripts/
-│   ├── orchestrate-v4.ts             # Main orchestrator (v4.5, 6-signal routing)
+│   ├── orchestrate-v4.ts             # Main orchestrator (v4.9, 6-signal routing + OmniRoute)
+│   ├── tier-resolve.ts               # 9-signal complexity estimator + OmniRoute combo selection
+│   ├── test-tier-resolve.ts          # Tier-resolve test suite
+│   ├── test-dynamic-resolution.ts    # Dynamic resolution integration tests
+│   ├── swarm-hybrid-runner.ts        # Hybrid runner for mixed local/remote execution
 │   ├── token-optimizer.ts            # Token cleaning + hierarchical memory
 │   ├── swarm-memory.ts               # SQLite persistence + inter-agent messaging
 │   ├── swarm-config.ts               # Configuration management CLI
@@ -367,12 +411,19 @@ zo-swarm-orchestrator/
 │   ├── benchmark.ts                  # Memory strategy benchmarking
 │   ├── performance-test.ts           # Baseline vs enhanced performance test
 │   └── test-orchestrator.ts          # Test suite
+├── seeds/                            # Seed YAML specs for swarm runs
+├── evaluations/                      # Post-flight evaluation reports
+├── data/
+│   ├── weights.json                  # Auto-tuned tier-resolve signal weights
+│   └── feedback.jsonl                # Resolution feedback log
 ├── assets/
 │   ├── persona-registry.json         # Persona metadata
 │   └── swarm-patterns.json           # 6 pre-built analysis patterns
 └── examples/
     ├── sample-tasks.json             # Simple example
     ├── test-v4-simple.json           # Basic v4 test
+    ├── test-swarm-heavy.json         # Heavy complexity test
+    ├── persona-executor-demo.json    # Persona-to-executor mapping demo
     └── ...                           # Stress tests and workflow examples
 ```
 
