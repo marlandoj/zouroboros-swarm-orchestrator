@@ -51,8 +51,10 @@ if [ -n "${CLAUDE_CODE_MODEL:-}" ]; then
   EXTRA_ARGS="--model $CLAUDE_CODE_MODEL"
 fi
 
-timeout "$TIMEOUT" "$CLAUDE_BIN" -p "$PROMPT" --output-format text $EXTRA_ARGS 2>"$STDERR_LOG"
+set +e
+timeout "$TIMEOUT" "$CLAUDE_BIN" -p "$PROMPT" --yolo --output-format text $EXTRA_ARGS 2>"$STDERR_LOG"
 EXIT_CODE=$?
+set -e 
 
 if [ $EXIT_CODE -ne 0 ]; then
   echo "BRIDGE_ERROR: exit=$EXIT_CODE stderr=$(cat "$STDERR_LOG" 2>/dev/null | head -5)" >&2

@@ -1,0 +1,63 @@
+[
+  {
+    "id": "security-review",
+    "executor": "gemini",
+    "agencyPersona": "Backend Architect",
+    "task": "Review the OmniRoute provider registry for security issues: hardcoded secrets, missing input validation, and unsafe deserialization patterns.",
+    "priority": "high",
+    "model": "swarm-heavy",
+    "timeoutSeconds": 180,
+    "memoryMetadata": {
+      "category": "security",
+      "tags": ["omniroute", "security-review"]
+    }
+  },
+  {
+    "id": "performance-audit",
+    "executor": "claude-code",
+    "agencyPersona": "Performance Benchmarker",
+    "task": "Analyze the OmniRoute failover chain for latency bottlenecks. Identify timeout cascades and suggest improvements.",
+    "priority": "high",
+    "model": "swarm-heavy",
+    "timeoutSeconds": 300,
+    "memoryMetadata": {
+      "category": "performance",
+      "tags": ["omniroute", "latency"]
+    }
+  },
+  {
+    "id": "compliance-check",
+    "executor": "hermes",
+    "agencyPersona": "Legal Compliance Checker",
+    "task": "Check the OmniRoute configuration for data residency issues — are API calls being routed through regions that comply with GDPR?",
+    "priority": "medium",
+    "model": "swarm-mid",
+    "timeoutSeconds": 180,
+    "memoryMetadata": {
+      "category": "compliance",
+      "tags": ["omniroute", "gdpr"]
+    }
+  },
+  {
+    "id": "synthesis",
+    "executor": "claude-code",
+    "agencyPersona": "Executive Summary Generator",
+    "task": "Synthesize findings from the security review, performance audit, and compliance check into a prioritized action plan with P0/P1/P2 severity ratings.",
+    "priority": "critical",
+    "model": "swarm-heavy",
+    "timeoutSeconds": 300,
+    "dependsOn": ["security-review", "performance-audit", "compliance-check"],
+    "memoryMetadata": {
+      "category": "synthesis",
+      "tags": ["omniroute", "action-plan"]
+    }
+  },
+  {
+    "_comment": "Backward-compat example: old-style task with only persona field still works",
+    "id": "quick-check",
+    "persona": "gemini",
+    "task": "List the top 5 most-used OmniRoute combo names from the config.",
+    "priority": "low",
+    "timeoutSeconds": 60
+  }
+]

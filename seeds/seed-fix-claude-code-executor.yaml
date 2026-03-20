@@ -1,0 +1,140 @@
+id: seed-fix-claude-code-executor
+created: 2026-03-16T12:15:00Z
+goal: >
+  Fix the Claude Code swarm executor so it can participate in DAG-based swarm
+  orchestration as a fully agentic local executor — with tool use, process
+  isolation to bypass nested-session detection, correct bridge paths, tiered
+  timeouts, and dynamic OmniRoute model resolution.
+
+constraints:
+  - "Must use process isolation (setsid/unshare) to detach claude CLI from parent session"
+  - "Must preserve full agentic tool use (Read, Write, Bash, Glob, Grep, etc.)"
+  - "Model tier mapping must be resolved dynamically via OmniRoute tier-resolve.ts, not hardcoded"
+  - "Timeouts must be per-complexity-tier: swarm-light=120s, swarm-mid=300s, swarm-heavy=600s"
+  - "Bridge path must be canonical: Skills/zo-swarm-executors/bridges/claude-code-bridge.sh"
+  - "Fix must apply to both orchestrator config AND per-seed YAML references"
+  - "No breaking changes to other executors (hermes, gemini, codex)"
+
+acceptance_criteria:
+  - "AC1: A swarm execution that explicitly routes tasks to claude-code executor completes without failover"
+  - "AC2: At least one task per complexity tier (light/mid/heavy) completes successfully via claude-code"
+  - "AC3: Zero 'exit code 1' nested-session errors appear in the NDJSON run logs"
+  - "AC4: Bridge script resolves model names dynamically from OmniRoute tier-resolve.ts output"
+  - "AC5: Orchestrator executor registry references correct bridge path"
+  - "AC6: Timeout values in bridge honor per-tier configuration"
+
+ontology:
+  - name: executor
+    description: "A local CLI-based agent that runs swarm tasks"
+    fields:
+      - name: name
+        type: string
+        description: "Executor identifier (claude-code, hermes, gemini, codex)"
+      - name: bridge_path
+        type: string
+        description: "Absolute path to the bridge shell script"
+      - name: timeout
+        type: object
+        description: "Per-tier timeout map (swarm-light, swarm-mid, swarm-heavy in seconds)"
+      - name: model_resolver
+        type: string
+        description: "Method for resolving model name (static | omniroute)"
+  - name: bridge_script
+    description: "Shell script that invokes a CLI executor in one-shot mode"
+    fields:
+      - name: isolation_method
+        type: string
+        description: "Process isolation strategy (setsid, unshare, none)"
+      - name: env_cleanup
+        type: array
+        description: "Environment variables to unset before invocation"
+      - name: model_resolution
+        type: string
+        description: "How the target model is determined (hardcoded tier map | omniroute dynamic)"
+  - name: swarm_task
+    description: "A unit of work in the DAG assigned to an executor"
+    fields:
+      - name: task_id
+        type: string
+        description: "Unique task identifier"
+      - name: persona
+        type: string
+        description: "Target executor persona"
+      - name: complexity_tier
+        type: string
+        description: "swarm-light | swarm-mid | swarm-heavy"
+      - name: timeout_s
+        type: integer
+        description: "Timeout in seconds derived from complexity tier"
+
+evaluation_principles:
+  - name: correctness
+    description: "Claude-code executor completes tasks without nested-session errors"
+    weight: 0.40
+  - name: compatibility
+    description: "No regressions to hermes, gemini, or codex executors"
+    weight: 0.25
+  - name: efficiency
+    description: "Dynamic model routing produces correct tier-to-model mappings and saves tokens"
+    weight: 0.20
+  - name: maintainability
+    description: "Single source of truth for bridge paths and timeout config"
+    weight: 0.15
+
+exit_conditions:
+  - name: all_ac_met
+    description: "All 6 acceptance criteria satisfied"
+    criteria: "AC compliance = 100%"
+  - name: regression_free
+    description: "Existing hermes/gemini/codex executors unaffected"
+    criteria: "Run a multi-executor swarm and verify all executors succeed"
+  - name: log_clean
+    description: "No nested-session errors in NDJSON logs"
+    criteria: "grep 'exited with code 1' on claude-code entries returns 0 matches"
+
+tasks:
+  - id: T1-isolation-wrapper
+    description: >
+      Modify claude-code-bridge.sh to wrap the claude CLI invocation in a
+      process isolation layer (setsid + unshare where available) and scrub all
+      session-detection env vars (CLAUDECODE, CLAUDE_CODE_SESSION, etc.)
+    depends_on: []
+    persona: claude-code
+    tier: swarm-mid
+
+  - id: T2-dynamic-omniroute
+    description: >
+      Replace the hardcoded case/esac tier-to-model mapping in claude-code-bridge.sh
+      with a call to bun Skills/zo-swarm-orchestrator/scripts/tier-resolve.ts
+      --omniroute to get the resolved model dynamically.
+      Fall back to static mapping only if OmniRoute is unreachable.
+    depends_on: []
+    persona: claude-code
+    tier: swarm-mid
+
+  - id: T3-tiered-timeouts
+    description: >
+      Replace the single CLAUDE_CODE_TIMEOUT default (600s) with per-tier
+      timeouts: swarm-light=120s, swarm-mid=300s, swarm-heavy=600s.
+      Read the tier from SWARM_RESOLVED_MODEL or a new SWARM_TIER env var.
+    depends_on: []
+    persona: claude-code
+    tier: swarm-light
+
+  - id: T4-fix-bridge-paths
+    description: >
+      Update the orchestrator executor registry config and any existing seed
+      YAML files to reference the canonical bridge path:
+      Skills/zo-swarm-executors/bridges/claude-code-bridge.sh.
+      Search all .yaml and .ts config files for stale paths.
+    depends_on: []
+    persona: claude-code
+    tier: swarm-light
+
+  - id: T5-verification-run
+    description: >
+      Run a swarm execution with 3 tasks (one per tier: light, mid, heavy)
+      explicitly routed to claude-code. Verify AC1-AC6 against NDJSON logs.
+    depends_on: [T1-isolation-wrapper, T2-dynamic-omniroute, T3-tiered-timeouts, T4-fix-bridge-paths]
+    persona: claude-code
+    tier: swarm-mid

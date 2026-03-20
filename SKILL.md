@@ -34,6 +34,93 @@ bun orchestrate-v4.ts doctor
 
 ---
 
+## Long-Running Swarms (>15 min)
+
+### The Problem
+
+Zo's chat interface times out after ~15 minutes of inactivity. For large campaigns (>10 tasks), the swarm continues running in the background, but the chat window loses connection and never sees the final output.
+
+### The Solution: Hybrid Runner
+
+Use `swarm-hybrid-runner.ts` for campaigns that may exceed 15 minutes:
+
+```bash
+# Hybrid mode with progress streaming + graceful handoff
+bun scripts/swarm-hybrid-runner.ts campaign.json --notify sms
+
+# Or with email notification
+bun scripts/swarm-hybrid-runner.ts campaign.json --notify email
+```
+
+**What happens:**
+1. ✅ **First 13 minutes**: Streams progress updates to chat every 10 seconds
+2. ⏰ **At 13 minutes**: Gracefully hands off to background mode
+3. 📱 **When complete**: Sends SMS/email notification with results path
+4. 💾 **Always**: Saves full results to `~/.swarm/results/<swarm-id>.json`
+
+### Check Status Anytime
+
+```bash
+# Check progress on a running or completed swarm
+bun scripts/orchestrate-v4.ts status <swarm-id>
+
+# Example output:
+# 🔍 Swarm Status: swarm_1710284123456
+# Status: 🏃 running
+# PID: 12345
+# Started: 3/12/2026, 2:05:00 PM
+# Progress: 8/20 tasks (40%)
+# Elapsed: 18m 34s
+# Last update: 30s ago
+# 📄 Results: ~/.swarm/results/swarm_1710284123456.json
+```
+
+### Recommended Workflow
+
+| Campaign Size | Recommended Approach | Rationale |
+|---------------|---------------------|-----------|
+| 1-5 tasks | Direct orchestrator | Completes in <10 min, no timeout risk |
+| 6-10 tasks | Direct with `--notify email` | May approach timeout, get notified when done |
+| 10+ tasks | **Hybrid runner** | Will exceed timeout, need graceful handoff |
+| 20+ tasks | **Hybrid runner + batch** | Consider breaking into multiple smaller campaigns |
+
+### Background Mode (Manual)
+
+For running swarms completely in the background from the start:
+
+```bash
+# Start in background with notification
+nohup bun scripts/orchestrate-v4.ts campaign.json \
+  --notify sms \
+  > /tmp/swarm.log 2>&1 &
+
+# Check status
+bun scripts/orchestrate-v4.ts status <swarm-id>
+
+# View live logs
+tail -f /tmp/swarm.log
+```
+
+### Notification Options
+
+```bash
+# SMS notification (default for hybrid runner)
+--notify sms
+
+# Email notification
+--notify email
+
+# No notification (results file only)
+# (omit --notify flag)
+```
+
+**When notifications are sent:**
+- ✅ Swarm completes successfully
+- ❌ Swarm fails (preflight or runtime errors)
+- Both cases include: duration, success/failure summary, results file path
+
+---
+
 ## Version Status
 
 | Version | Status | Key Innovation |

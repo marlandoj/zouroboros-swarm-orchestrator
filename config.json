@@ -1,5 +1,5 @@
 {
-  "localConcurrency": 4,
+  "localConcurrency": 8,
   "timeoutSeconds": 600,
   "maxRetries": 3,
   "crossTaskContextWindow": 3,
@@ -16,6 +16,6 @@
     "longTermMemorySize": 3,
     "enableDeduplication": true,
     "enableHTMLStripping": true,
-    "maxTokens": 8000
+    "maxTokens": 16000
   }
 }

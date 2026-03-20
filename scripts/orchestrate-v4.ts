@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Swarm Orchestrator v4.5.0 - Memory-Enriched Routing
+ * Swarm Orchestrator v4.9.0 - Persona-Executor Split
  *
  * Building on v3's persistent memory, v4 adds:
  * - Token optimization (HTML stripping, normalization, deduplication)
@@ -27,6 +27,21 @@
  * - Procedure + temporal scoring signals in composite router
  * - 6-signal routing: capability + health + complexity + history + procedure + temporal
  *
+ * v4.9 "Persona-Executor Split" adds:
+ * - Separate `executor` field (which CLI runs the task) from `persona` (backward compat)
+ * - New `agencyPersona` field — resolved from agency-agents-personas.json
+ * - Persona markdown injected into prompt via <persona> block — works across all executors
+ * - Sub-agent inheritance: prompt instructs executors to pass <persona> to sub-agents
+ * - Parallel-safe: no shared Zo persona state, each task gets its own prompt-injected persona
+ * - Backward compatible: tasks using only `persona` field work exactly as before
+ *
+ * v4.8 "Dynamic Model Routing" adds:
+ * - Queries OmniRoute best_combo_for_task for live combo recommendations
+ * - Task type inference (coding/review/planning/analysis/debugging/documentation)
+ * - 60s combo cache to avoid per-task API overhead
+ * - Fallback to static tier→combo mapping when OmniRoute unreachable
+ * - Shared logic imported from tier-resolve.ts (no duplication)
+ *
  * Inspired by:
  * - prompt-refiner: Schema/Response compression
  * - Agent-Memory-Playground: 9 memory strategies
@@ -51,6 +66,19 @@ interface Task {
   persona: string;
   task: string;
   priority: PriorityQueue;
+
+  // v4.9: Separate executor from persona identity
+  // "executor" specifies which CLI runs the task (claude-code, hermes, gemini, codex).
+  // "persona" specifies the agency persona identity to inject into the prompt.
+  // When "executor" is set, it takes precedence for routing/dispatch.
+  // When only "persona" is set (backward compat), it's used as the executor ID.
+  executor?: string;
+
+  // v4.9: Agency persona name — resolved from agency-agents-personas.json.
+  // The persona markdown is loaded and injected into the prompt so the executor
+  // "acts as" this persona. Works across all executors (Claude Code, Gemini, Hermes, Codex).
+  // When spawning sub-agents, the persona content is passed through the prompt — no shared state.
+  agencyPersona?: string;
 
   // DAG dependencies — task IDs that must complete before this task runs
   dependsOn?: string[];
@@ -184,24 +212,18 @@ const COMPLEXITY_AFFINITY: Record<string, Record<ComplexityTier, number>> = {
 };
 
 function estimateComplexity(task: Task): ComplexityEstimate {
-  const text = task.task.toLowerCase();
-  const words = text.split(/\s+/).length;
-  const fileRefs = (text.match(/\/[\w\-./]+\.\w+/g) || []).length;
-  const hasMultiStep = /\b(then|after that|next|step \d|finally|first|second|third)\b/.test(text)
-    || (text.match(/\d+\.\s/g) || []).length >= 2;
-  const hasTool = /\b(git|npm|bun|pip|curl|sed|grep|mkdir|chmod|docker)\b/.test(text);
-  const hasAnalysis = /\b(analy[zs]e|review|audit|compare|evaluate|assess|inspect)\b/.test(text);
-
-  const score = (words > 200 ? 1 : 0) + (fileRefs > 3 ? 1 : 0)
-    + (hasMultiStep ? 1 : 0) + (hasTool ? 1 : 0) + (hasAnalysis ? 1 : 0);
-
-  let tier: ComplexityTier;
-  if (score <= 1) tier = "trivial";
-  else if (score <= 2) tier = "simple";
-  else if (score <= 3) tier = "moderate";
-  else tier = "complex";
-
-  return { tier, signals: { wordCount: words, fileCount: fileRefs, hasMultiStep, hasTool, hasAnalysis } };
+  const text = task.task || "";
+  const result = estimateComplexitySync(text);
+  return {
+    tier: result.tier,
+    signals: {
+      wordCount: result._legacy?.wordCount || 0,
+      fileCount: result._legacy?.fileCount || 0,
+      hasMultiStep: result._legacy?.hasMultiStep || false,
+      hasTool: result._legacy?.hasTool || false,
+      hasAnalysis: result._legacy?.hasAnalysis || false,
+    },
+  };
 }
 
 function complexityFitScore(executorId: string, complexity: ComplexityTier): number {
@@ -210,19 +232,78 @@ function complexityFitScore(executorId: string, complexity: ComplexityTier): num
 
 // ============================================================================
 // v4.7: TIERED MODEL ROUTING — maps complexity to OmniRoute combos
+// v4.8: DYNAMIC MODEL ROUTING — queries OmniRoute best_combo_for_task
 // ============================================================================
 
-const TIER_TO_COMBO: Record<ComplexityTier, string> = {
-  trivial:  "swarm-light",
-  simple:   "swarm-light",
-  moderate: "swarm-mid",
-  complex:  "swarm-heavy",
-};
+import {
+  inferTaskType,
+  estimateComplexitySync,
+  fetchCombos,
+  bestComboForTask,
+  TIER_TO_COMBO as STATIC_TIER_TO_COMBO,
+  type TaskType,
+  type ComplexityEstimate as TierResolveEstimate,
+  type OmniRouteRecommendation,
+} from "./tier-resolve";
 
+const TIER_TO_COMBO: Record<ComplexityTier, string> = { ...STATIC_TIER_TO_COMBO };
+
+// Combo cache: avoids hitting OmniRoute /api/combos on every task in a DAG wave
+let _comboCache: { data: any[]; fetchedAt: number } | null = null;
+let _forceCombo: string | null = null;
+const COMBO_CACHE_TTL_MS = 60_000; // 60 seconds
+
+async function getCachedCombos(): Promise<any[] | null> {
+  if (_comboCache && Date.now() - _comboCache.fetchedAt < COMBO_CACHE_TTL_MS) {
+    return _comboCache.data;
+  }
+  try {
+    const combos = await fetchCombos();
+    _comboCache = { data: combos, fetchedAt: Date.now() };
+    return combos;
+  } catch {
+    return null;
+  }
+}
+
+interface ModelResolution {
+  combo: string;
+  method: "override" | "dynamic" | "static";
+  taskType?: TaskType;
+  tier: ComplexityTier;
+}
+
+async function resolveModelDynamic(task: Task): Promise<ModelResolution> {
+  const text = task.task || "";
+  const v2Result = estimateComplexitySync(text);
+  const tier = v2Result.tier;
+
+  if (_forceCombo) {
+    return { combo: _forceCombo, method: "override", tier };
+  }
+
+  if (task.model) {
+    return { combo: task.model, method: "override", tier };
+  }
+
+  const taskType = v2Result.inferredTaskType;
+  const combos = await getCachedCombos();
+
+  if (combos && combos.length > 0) {
+    const rec = bestComboForTask(combos, taskType, tier);
+    if (rec.recommendedCombo.name && rec.recommendedCombo.name !== "none") {
+      return { combo: rec.recommendedCombo.name, method: "dynamic", taskType, tier };
+    }
+  }
+
+  return { combo: TIER_TO_COMBO[tier], method: "static", taskType, tier };
+}
+
+// Sync fallback for non-async contexts
 function resolveModelForTask(task: Task): string {
   if (task.model) return task.model;
-  const { tier } = estimateComplexity(task);
-  return TIER_TO_COMBO[tier];
+  const result = estimateComplexitySync(task.task || "");
+  return TIER_TO_COMBO[result.tier];
 }
 
 // ============================================================================
@@ -386,6 +467,22 @@ function createSwarmEpisode(opts: {
       db.prepare("INSERT OR IGNORE INTO episode_entities (episode_id, entity) VALUES (?, ?)").run(id, entity);
     }
 
+    // Sync to episode_documents + FTS so continuation recall can find this episode
+    const hasDocTable = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='episode_documents'"
+    ).get();
+    if (hasDocTable) {
+      const metadataText = opts.metadata ? JSON.stringify(opts.metadata) : "";
+      const searchText = [opts.summary, opts.entities.join(" "), metadataText].filter(Boolean).join("\n");
+      db.prepare(`
+        INSERT INTO episode_documents (episode_id, text, updated_at)
+        VALUES (?, ?, strftime('%s','now'))
+        ON CONFLICT(episode_id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at
+      `).run(id, searchText);
+      db.prepare("DELETE FROM episode_documents_fts WHERE episode_id = ?").run(id);
+      db.prepare("INSERT INTO episode_documents_fts (episode_id, text) VALUES (?, ?)").run(id, searchText);
+    }
+
     db.close();
     return id;
   } catch {
@@ -474,9 +571,9 @@ const DEFAULT_CONFIG: OrchestratorConfig = {
     longTermMemorySize: 3,
     enableDeduplication: true,
     enableHTMLStripping: true,
-    maxTokens: 8000,
+    maxTokens: 16000,
   },
-  maxContextTokens: 8000,
+  maxContextTokens: 16000,
   crossTaskContextWindow: 3,
   dagMode: "streaming",
   modelName: process.env.SWARM_MODEL_NAME || undefined,
@@ -520,7 +617,7 @@ function loadConfig(): RuntimeConfig {
       longTermMemorySize: 3,
       enableDeduplication: true,
       enableHTMLStripping: true,
-      maxTokens: 8000,
+      maxTokens: 16000,
     },
   };
 
@@ -574,6 +671,100 @@ const PATHS = {
   agentPersonasRegistry: process.env.SWARM_AGENT_REGISTRY || join(WORKSPACE, "agency-agents-personas.json"),
   executorRegistry: process.env.SWARM_EXECUTOR_REGISTRY || join(WORKSPACE, "Skills", "zo-swarm-executors", "registry", "executor-registry.json"),
 } as const;
+
+// ============================================================================
+// AGENCY PERSONA RESOLVER (v4.9)
+// ============================================================================
+
+/** Cache of persona name → markdown content (loaded once per run) */
+const agencyPersonaCache = new Map<string, string>();
+/** Cache of persona name → abspath (loaded from registry) */
+const agencyPersonaIndex = new Map<string, string>();
+let agencyPersonaIndexLoaded = false;
+
+/**
+ * Load the agency-agents-personas.json index into memory.
+ * The registry is an array of { name, abspath } objects.
+ */
+function loadAgencyPersonaIndex(): void {
+  if (agencyPersonaIndexLoaded) return;
+  agencyPersonaIndexLoaded = true;
+  try {
+    const registryPath = PATHS.agentPersonasRegistry;
+    if (!existsSync(registryPath)) return;
+    const raw = readFileSync(registryPath, "utf-8");
+    const entries: Array<{ name: string; abspath: string }> = JSON.parse(raw);
+    for (const entry of entries) {
+      if (entry.name && entry.abspath) {
+        // Index by display name and also by a slugified key for fuzzy lookup
+        agencyPersonaIndex.set(entry.name, entry.abspath);
+        // Also index by lowercase slug (e.g. "Backend Architect" → "backend-architect")
+        const slug = entry.name.toLowerCase().replace(/\s+/g, "-");
+        if (!agencyPersonaIndex.has(slug)) {
+          agencyPersonaIndex.set(slug, entry.abspath);
+        }
+      }
+    }
+  } catch (err) {
+    console.log(`  ⚠️  Failed to load agency persona index: ${err}`);
+  }
+}
+
+/**
+ * Resolve an agency persona name to its markdown content.
+ * Returns empty string if persona not found or file unreadable.
+ */
+function resolveAgencyPersona(personaName: string): string {
+  if (!personaName) return "";
+
+  // Check cache first
+  if (agencyPersonaCache.has(personaName)) {
+    return agencyPersonaCache.get(personaName)!;
+  }
+
+  loadAgencyPersonaIndex();
+
+  // Try exact match, then slug match
+  let abspath = agencyPersonaIndex.get(personaName);
+  if (!abspath) {
+    const slug = personaName.toLowerCase().replace(/\s+/g, "-");
+    abspath = agencyPersonaIndex.get(slug);
+  }
+  // Try partial match as last resort
+  if (!abspath) {
+    const needle = personaName.toLowerCase();
+    for (const [key, val] of agencyPersonaIndex.entries()) {
+      if (key.toLowerCase().includes(needle) || needle.includes(key.toLowerCase())) {
+        abspath = val;
+        break;
+      }
+    }
+  }
+
+  if (!abspath || !existsSync(abspath)) {
+    console.log(`  ⚠️  Agency persona "${personaName}" not found in registry`);
+    agencyPersonaCache.set(personaName, "");
+    return "";
+  }
+
+  try {
+    const content = readFileSync(abspath, "utf-8");
+    agencyPersonaCache.set(personaName, content);
+    return content;
+  } catch (err) {
+    console.log(`  ⚠️  Failed to read agency persona file: ${abspath}: ${err}`);
+    agencyPersonaCache.set(personaName, "");
+    return "";
+  }
+}
+
+/**
+ * Get the effective executor ID for a task (v4.9 backward-compat).
+ * If task.executor is set, use that. Otherwise fall back to task.persona.
+ */
+function getEffectiveExecutor(task: Task): string {
+  return task.executor || task.persona;
+}
 
 // ============================================================================
 // MEMORY INTEGRATION MODULE
@@ -972,8 +1163,9 @@ class TokenOptimizedOrchestrator {
 
     // 1. Validate campaign JSON structure
     for (const task of tasks) {
-      if (!task.id || !task.persona || !task.task) {
-        errors.push(`Invalid task: missing required fields (id=${task.id}, persona=${task.persona})`);
+      const effectiveExec = getEffectiveExecutor(task);
+      if (!task.id || !effectiveExec || !task.task) {
+        errors.push(`Invalid task: missing required fields (id=${task.id}, executor/persona=${effectiveExec})`);
       }
     }
 
@@ -986,13 +1178,14 @@ class TokenOptimizedOrchestrator {
 
     // 3. Verify local executor bridges exist and are executable
     for (const task of tasks) {
-      const executor = this.localExecutors.get(task.persona);
+      const effectiveExec = getEffectiveExecutor(task);
+      const executor = this.localExecutors.get(effectiveExec);
       if (executor) {
         if (!existsSync(executor.bridge)) {
-          errors.push(`Local executor bridge not found: ${executor.bridge} (persona: ${task.persona})`);
+          errors.push(`Local executor bridge not found: ${executor.bridge} (executor: ${effectiveExec})`);
         }
       } else {
-        errors.push(`No local executor found for persona: ${task.persona}. All tasks must have a local executor.`);
+        errors.push(`No local executor found for executor: ${effectiveExec}. All tasks must have a local executor.`);
       }
     }
 
@@ -1211,7 +1404,7 @@ class TokenOptimizedOrchestrator {
     const overallOutcome = failed.length === 0 ? "success" as const
       : successful.length === 0 ? "failure" as const
       : "resolved" as const;  // partial success
-    const executorsUsed = [...new Set(this.results.map(r => r.task.persona))];
+    const executorsUsed = [...new Set(this.results.map(r => getEffectiveExecutor(r.task)))];
     const episodeId = createSwarmEpisode({
       swarmId: this.swarmId,
       summary: `Swarm "${this.swarmId}": ${successful.length}/${this.results.length} tasks passed in ${((Date.now() - startTime) / 1000).toFixed(1)}s` +
@@ -1331,8 +1524,10 @@ class TokenOptimizedOrchestrator {
         });
         executing.set(id, execution);
 
-        console.log(`  ✨ [${id}] Streaming start → ${task.persona} [🖥️  local] (${active}/${maxConcurrency})`);
-        this.logger.log("task_streaming_start", { taskId: id, persona: task.persona, active, activeWorkers: executing.size });
+        const execId = getEffectiveExecutor(task);
+        const personaLabel = task.agencyPersona ? ` as ${task.agencyPersona}` : "";
+        console.log(`  ✨ [${id}] Streaming start → ${execId}${personaLabel} [🖥️  local] (${active}/${maxConcurrency})`);
+        this.logger.log("task_streaming_start", { taskId: id, executor: execId, agencyPersona: task.agencyPersona, active, activeWorkers: executing.size });
       }
     };
 
@@ -1454,15 +1649,17 @@ class TokenOptimizedOrchestrator {
     let retries = 0;
     const triedExecutors = new Set<string>();
     const category = task.memoryMetadata?.category || "general";
+    const originalExecutor = getEffectiveExecutor(task);
     const originalPersona = task.persona;
-    const resolvedModel = resolveModelForTask(task);
+    const resolution = await resolveModelDynamic(task);
+    const resolvedModel = resolution.combo;
 
     while (retries <= this.config.maxRetries) {
-      // --- Executor selection (v4.2 retry-with-reroute) ---
+      // --- Executor selection (v4.2 retry-with-reroute, v4.9 executor/persona split) ---
       let executorId: string;
-      if (originalPersona !== "auto" && retries === 0) {
-        // Explicit persona specified — honor it on first attempt
-        executorId = originalPersona;
+      if (originalExecutor !== "auto" && retries === 0) {
+        // Explicit executor specified — honor it on first attempt
+        executorId = originalExecutor;
       } else {
         // Auto-route or reroute after failure
         const decision = this.compositeRoute(task, triedExecutors.size > 0 ? triedExecutors : undefined);
@@ -1496,8 +1693,13 @@ class TokenOptimizedOrchestrator {
         };
       }
 
-      // Temporarily set task.persona for callAgent dispatch and prompt building
-      task.persona = executorId;
+      // Temporarily set executor for callAgent dispatch and prompt building
+      // v4.9: Use executor field if task uses it, else fall back to persona for compat
+      if (task.executor !== undefined) {
+        task.executor = executorId;
+      } else {
+        task.persona = executorId;
+      }
 
       // Build optimized prompt (inside loop — executor may change on reroute)
       const prompt = await this.buildOptimizedPrompt(task);
@@ -1507,7 +1709,14 @@ class TokenOptimizedOrchestrator {
         console.log(`  🚀 [${task.id}] ${executorId} (attempt ${retries + 1}) ~${promptTokens} tokens`);
         this.logger.log("task_start", { taskId: task.id, persona: executorId, attempt: retries + 1, promptTokens });
 
-        console.log(`  💰 [${task.id}] Model tier: ${resolvedModel}${task.model ? " (per-task override)" : ""}`);
+        const methodIcon = resolution.method === "dynamic" ? "🎯" : resolution.method === "override" ? "📌" : "📋";
+        const methodLabel = resolution.method === "dynamic"
+          ? `dynamic (taskType=${resolution.taskType}, tier=${resolution.tier})`
+          : resolution.method === "override"
+            ? "per-task override"
+            : `static (tier=${resolution.tier})`;
+        console.log(`  ${methodIcon} [${task.id}] Model: ${resolvedModel} — ${methodLabel}`);
+        this.logger.log("model_resolution", { taskId: task.id, combo: resolvedModel, method: resolution.method, taskType: resolution.taskType, tier: resolution.tier });
         const output = await this.callAgent(executorId, prompt, task.timeoutSeconds, resolvedModel);
         const outputTokens = this.estimateTokens(output);
 
@@ -1552,7 +1761,7 @@ class TokenOptimizedOrchestrator {
           summary: output.slice(0, 200),
         });
 
-        task.persona = originalPersona;
+        task.persona = originalPersona; if (task.executor !== undefined) task.executor = originalExecutor;
         return {
           task,
           success: true,
@@ -1610,7 +1819,7 @@ class TokenOptimizedOrchestrator {
                 summary: output.slice(0, 200),
               });
 
-              task.persona = originalPersona;
+              task.persona = originalPersona; if (task.executor !== undefined) task.executor = originalExecutor;
               return {
                 task,
                 success: true,
@@ -1625,7 +1834,7 @@ class TokenOptimizedOrchestrator {
             }
           }
 
-          task.persona = originalPersona;
+          task.persona = originalPersona; if (task.executor !== undefined) task.executor = originalExecutor;
           return {
             task,
             success: false,
@@ -1645,7 +1854,7 @@ class TokenOptimizedOrchestrator {
         const output = await this.callOmniRoute(omniPrompt, task.timeoutSeconds, resolvedModel);
 
         this.logger.log("task_success_omniroute", { taskId: task.id, durationMs: Date.now() - startTime });
-        task.persona = originalPersona;
+        task.persona = originalPersona; if (task.executor !== undefined) task.executor = originalExecutor;
         return { task, success: true, output, durationMs: Date.now() - startTime, retries };
       } catch (omniError) {
         console.log(`  ❌ [${task.id}] OmniRoute fallback also failed: ${omniError}`);
@@ -1653,7 +1862,7 @@ class TokenOptimizedOrchestrator {
       }
     }
 
-    task.persona = originalPersona;
+    task.persona = originalPersona; if (task.executor !== undefined) task.executor = originalExecutor;
     return {
       task,
       success: false,
@@ -1785,6 +1994,18 @@ CRITICAL RULES:
   private async buildOptimizedPrompt(task: Task): Promise<string> {
     const basePrompt = task.task;
 
+    // v4.9: Resolve agency persona and inject into prompt
+    let personaContext = "";
+    if (task.agencyPersona) {
+      const personaMd = resolveAgencyPersona(task.agencyPersona);
+      if (personaMd) {
+        personaContext = `<persona>\n${personaMd}\n</persona>\n\n` +
+          `You are acting as the "${task.agencyPersona}" persona. ` +
+          `Follow the identity, rules, and deliverable formats defined above. ` +
+          `If you spawn sub-agents, include the <persona> block in their prompts so they inherit this identity.\n`;
+      }
+    }
+
     // Get memory context from hierarchical/swarm memory
     const memoryContext = this.memoryManager?.getContext(task) || "";
 
@@ -1793,8 +2014,9 @@ CRITICAL RULES:
     if (this.completedOutputs.length > 0) {
       const isSynthesis = task.memoryMetadata?.category === "synthesis"
         || task.id.toLowerCase().includes("synthesis")
-        || task.persona.toLowerCase().includes("manager")
-        || task.persona.toLowerCase().includes("pm");
+        || getEffectiveExecutor(task).toLowerCase().includes("manager")
+        || getEffectiveExecutor(task).toLowerCase().includes("pm")
+        || (task.agencyPersona || "").toLowerCase().includes("manager");
 
       // Synthesis tasks get ALL prior context; others get last N (crossTaskContextWindow)
       const window = isSynthesis
@@ -1809,8 +2031,13 @@ CRITICAL RULES:
         `Reference these to avoid duplication and provide cross-domain insights.\n\n${entries}`;
     }
 
-    // Assemble prompt: memory context + cross-task context + base task
+    // Assemble prompt: persona + memory context + cross-task context + base task
     let fullPrompt = "";
+
+    // v4.9: Persona identity comes first — sets the executor's behavioral frame
+    if (personaContext) {
+      fullPrompt += personaContext + "\n\n";
+    }
 
     if (memoryContext) {
       fullPrompt += memoryContext + "\n\n";
@@ -2341,17 +2568,23 @@ CRITICAL RULES:
 
     const uniqueKnown = [...new Set(knownList)];
 
-    // Phase 1: Composite-route tasks with persona === "auto" (v4.2)
+    // Phase 1: Composite-route tasks with executor/persona === "auto" (v4.2, v4.9)
     let autoRouted = 0;
     for (const task of tasks) {
-      if (task.persona === "auto") {
+      const effectiveExec = getEffectiveExecutor(task);
+      if (effectiveExec === "auto") {
         if (this.executorCapabilities.size === 0) {
           console.log(`  ⚠️  [${task.id}] No executor capabilities loaded — cannot auto-route`);
           this.logger.log("auto_route_skip", { taskId: task.id, reason: "no_capabilities" });
           continue;
         }
         const decision = this.compositeRoute(task);
-        task.persona = decision.executorId;
+        // v4.9: Set the executor field (preferred) or fall back to persona for compat
+        if (task.executor !== undefined) {
+          task.executor = decision.executorId;
+        } else {
+          task.persona = decision.executorId;
+        }
         console.log(`  🎯 [${task.id}] Composite-route → ${decision.executorName} (score: ${decision.compositeScore.toFixed(3)}, method: ${decision.method})`);
         this.logger.log("composite_route_assigned", { taskId: task.id, routed: decision.executorId, score: decision.compositeScore, method: decision.method });
         autoRouted++;
@@ -2361,23 +2594,41 @@ CRITICAL RULES:
       console.log(`   Composite-routed ${autoRouted} task(s) using ${this.config.routingStrategy || "balanced"} strategy\n`);
     }
 
-    // Phase 2: Fuzzy-match remaining unknown personas
+    // v4.9: Validate agency personas (resolve from registry, log warnings for missing)
+    let personasResolved = 0;
     for (const task of tasks) {
-      // Skip fuzzy matching for local executor personas — they're invoked by exact ID
-      if (this.localExecutors.has(task.persona)) continue;
-      // Skip already-resolved auto tasks
-      if (task.persona !== "auto" && this.executorCapabilities.has(task.persona)) continue;
+      if (task.agencyPersona) {
+        const content = resolveAgencyPersona(task.agencyPersona);
+        if (content) {
+          personasResolved++;
+        } else {
+          console.log(`  ⚠️  [${task.id}] Agency persona "${task.agencyPersona}" not found — task will run without persona identity`);
+          this.logger.log("agency_persona_missing", { taskId: task.id, persona: task.agencyPersona });
+        }
+      }
+    }
+    if (personasResolved > 0) {
+      console.log(`   Resolved ${personasResolved} agency persona(s) for prompt injection\n`);
+    }
 
-      if (!knownPersonas.has(task.persona)) {
-        const match = this.fuzzyMatchPersona(task.persona, uniqueKnown);
+    // Phase 2: Fuzzy-match remaining unknown personas (backward compat — for tasks without executor field)
+    for (const task of tasks) {
+      const effectiveExec = getEffectiveExecutor(task);
+      // Skip fuzzy matching for local executor personas — they're invoked by exact ID
+      if (this.localExecutors.has(effectiveExec)) continue;
+      // Skip already-resolved auto tasks
+      if (effectiveExec !== "auto" && this.executorCapabilities.has(effectiveExec)) continue;
+
+      if (!knownPersonas.has(effectiveExec)) {
+        const match = this.fuzzyMatchPersona(effectiveExec, uniqueKnown);
         if (match) {
-          const original = task.persona;
+          const original = effectiveExec;
           task.persona = match.name;
           this.personaMappings.set(original, match.name);
           console.log(`  🔄 Mapped "${original}" → "${match.name}" (score: ${match.score.toFixed(2)})`);
           this.logger.log("persona_mapped", { original, matched: match.name, score: match.score });
         } else {
-          console.log(`  ⚠️  No match found for "${task.persona}" — will produce generic response`);
+          console.log(`  ⚠️  No match found for "${effectiveExec}" — will produce generic response`);
         }
       }
     }
@@ -2522,7 +2773,7 @@ CRITICAL RULES:
   }
 
   private fuzzyMatchPersona(unknown: string, known: string[]): { name: string; score: number } | null {
-    const normalize = (s: string) => s.toLowerCase().replace(/[-_\s]+/g, " ").trim();
+    const normalize = (s: string) => (s || "").toLowerCase().replace(/[-_\s]+/g, " ").trim();
     const toKeywords = (s: string) => normalize(s).split(" ").filter(w => w.length > 2);
 
     const unknownNorm = normalize(unknown);
@@ -2751,7 +3002,9 @@ CRITICAL RULES:
         },
         results: this.results.map(r => ({
           taskId: r.task.id,
-          persona: r.task.persona,
+          executor: getEffectiveExecutor(r.task),
+          agencyPersona: r.task.agencyPersona || null,
+          persona: r.task.persona,  // backward compat
           priority: r.task.priority,
           success: r.success,
           durationMs: r.durationMs,
@@ -2913,6 +3166,101 @@ async function main() {
     process.exit(0);
   }
 
+  // Status command — check running or completed swarm
+  if (args[0] === "status") {
+    if (args.length < 2) {
+      console.error("❌ Usage: bun orchestrate-v4.ts status <swarm-id>");
+      process.exit(1);
+    }
+
+    const swarmId = args[1];
+    const logsDir = join(process.env.HOME || "/tmp", ".swarm", "logs");
+    const resultsDir = join(process.env.HOME || "/tmp", ".swarm", "results");
+    const progressFile = join(logsDir, `${swarmId}_progress.json`);
+    const lockFile = `/dev/shm/${swarmId}.lock`;
+    const resultFile = join(resultsDir, `${swarmId}.json`);
+
+    console.log(`🔍 Swarm Status: ${swarmId}\n`);
+
+    // Check if progress file exists
+    if (!existsSync(progressFile)) {
+      console.log(`❌ No progress file found for swarm: ${swarmId}`);
+      console.log(`   Expected: ${progressFile}`);
+      process.exit(1);
+    }
+
+    // Read progress
+    let progress: any;
+    try {
+      progress = JSON.parse(readFileSync(progressFile, "utf-8"));
+    } catch (e) {
+      console.error(`❌ Failed to parse progress file: ${e}`);
+      process.exit(1);
+    }
+
+    // Check if running
+    const isRunning = existsSync(lockFile);
+    let lockInfo: any;
+    if (isRunning) {
+      try {
+        lockInfo = JSON.parse(readFileSync(lockFile, "utf-8"));
+      } catch {}
+    }
+
+    // Calculate duration
+    const startTime = lockInfo?.ts || (Date.now() - (progress.elapsedMs || 0));
+    const elapsed = Date.now() - startTime;
+    const minutes = Math.floor(elapsed / 60000);
+    const seconds = Math.floor((elapsed % 60000) / 1000);
+
+    // Display status
+    const statusEmoji = progress.status === "complete" 
+      ? "✅" 
+      : progress.status === "preflight_failed" 
+      ? "❌" 
+      : isRunning 
+      ? "🏃" 
+      : "⏸️";
+    
+    console.log(`Status: ${statusEmoji} ${progress.status || (isRunning ? "running" : "stopped")}`);
+    
+    if (isRunning && lockInfo) {
+      console.log(`PID: ${lockInfo.pid}`);
+      console.log(`Started: ${new Date(lockInfo.ts).toLocaleString()}`);
+    }
+    
+    console.log(`\nProgress: ${progress.completed || 0}/${progress.totalTasks || 0} tasks (${progress.percentComplete || 0}%)`);
+    if (progress.failed > 0) {
+      console.log(`Failed: ${progress.failed}`);
+    }
+    console.log(`Elapsed: ${minutes}m ${seconds}s`);
+
+    // Show last update time
+    if (progress.ts) {
+      const updateAgo = Math.floor((Date.now() - new Date(progress.ts).getTime()) / 1000);
+      console.log(`Last update: ${updateAgo}s ago (${progress.ts})`);
+    }
+
+    // Show errors if any
+    if (progress.errors && progress.errors.length > 0) {
+      console.log(`\n❌ Errors:`);
+      progress.errors.forEach((err: string) => console.log(`   • ${err}`));
+    }
+
+    // Show result file if exists
+    if (existsSync(resultFile)) {
+      const stat = require("fs").statSync(resultFile);
+      console.log(`\n📄 Results: ${resultFile}`);
+      console.log(`   Updated: ${new Date(stat.mtime).toLocaleString()}`);
+      console.log(`   Size: ${Math.round(stat.size / 1024)}KB`);
+    }
+
+    // Progress file location
+    console.log(`\n📊 Progress file: ${progressFile}`);
+    
+    process.exit(0);
+  }
+
   const taskFile = args[0];
 
   // Load config.json as base defaults, then let CLI args override
@@ -2966,6 +3314,9 @@ async function main() {
         break;
       case "--model":
         fileConfig.modelName = args[++i];
+        break;
+      case "--force-combo":
+        _forceCombo = args[++i];
         break;
       case "--notify":
         const notifyChannel = args[++i] as "sms" | "email";

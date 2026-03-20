@@ -1,0 +1,97 @@
+# seed-swarm-heavy-remediation.yaml
+id: seed-swarm-heavy-001
+created: 2026-03-16T18:30:00-07:00
+goal: "Fix 4 issues discovered during swarm-heavy combo testing so that all executors can operate with any swarm tier combo, the tier-resolver respects explicit combo requests, and OmniRoute dashboard API auth works correctly."
+
+constraints:
+  - "Changes must be backwards-compatible with existing swarm campaigns"
+  - "No new dependencies — use existing bridge scripts and orchestrator code"
+  - "Gemini bridge must have a working fallback when Google Cloud Code API is unavailable"
+  - "OmniRoute .env fix must not break the running service"
+
+acceptance_criteria:
+  - "AC1: Codex bridge maps swarm-heavy to a model available on ChatGPT Codex accounts (not o3)"
+  - "AC2: Gemini bridge falls back to OmniRoute when direct Google API returns 403"
+  - "AC3: Tier-resolver supports a --force-combo CLI flag that bypasses complexity classification"
+  - "AC4: OmniRoute .env has duplicate API_KEY_SECRET on line 10 removed so REQUIRE_API_KEY=false is honored"
+  - "AC5: All 4 executors pass bridge test with SWARM_RESOLVED_MODEL=swarm-heavy"
+
+root_causes:
+  - id: RC1
+    issue: "Codex bridge maps swarm-heavy → o3, but o3 is not supported on ChatGPT Codex accounts"
+    evidence: 'ERROR: {"detail":"The \'o3\' model is not supported when using Codex with a ChatGPT account."}'
+    file: "Skills/zo-swarm-executors/bridges/codex-bridge.sh"
+    line: "swarm-heavy)    CODEX_MODEL=\"o3\" ;;"
+    fix: "Map swarm-heavy to gpt-5.3-codex (or gpt-5.2-codex) which are available on ChatGPT Codex accounts"
+
+  - id: RC2
+    issue: "Gemini CLI Google Cloud Code API account is disabled (ToS violation)"
+    evidence: "GaxiosError: This service has been disabled in this account for violation of Terms of Service"
+    file: "Skills/zo-swarm-executors/bridges/gemini-bridge.sh"
+    fix: "Add OmniRoute fallback — when direct Gemini CLI fails with exit 1, retry via OmniRoute /v1/chat/completions using the gemini provider prefix (e.g. gemini/gemini-3-pro-preview)"
+
+  - id: RC3
+    issue: "Tier-resolver always overrides model to swarm-light for short prompts, ignoring env var SWARM_OMNIROUTE_MODEL"
+    evidence: "📋 [heavy-analysis] Model: swarm-light — static (tier=trivial) despite SWARM_OMNIROUTE_MODEL=swarm-heavy"
+    file: "Skills/zo-swarm-orchestrator/scripts/orchestrate-v4.ts"
+    line_range: "258-276"
+    fix: "Add --force-combo CLI flag that sets a global override; resolveModelDynamic checks this before estimateComplexity"
+
+  - id: RC4
+    issue: "OmniRoute .env has empty API_KEY_SECRET= on line 10, shadowing the real key on line 204; service reads first value"
+    evidence: "Line 10: API_KEY_SECRET= (empty) | Line 204: API_KEY_SECRET=1abc... (real)"
+    file: "OmniRoute/.env"
+    fix: "Remove the empty API_KEY_SECRET= on line 10"
+
+tasks:
+  - id: R1-codex-model-map
+    description: "Update codex-bridge.sh swarm-heavy mapping from o3 to gpt-5.3-codex"
+    file: "Skills/zo-swarm-executors/bridges/codex-bridge.sh"
+    priority: critical
+    acceptance: "AC1, AC5"
+
+  - id: R2-gemini-omniroute-fallback
+    description: "Add OmniRoute HTTP fallback to gemini-bridge.sh when direct CLI exits non-zero"
+    file: "Skills/zo-swarm-executors/bridges/gemini-bridge.sh"
+    priority: critical
+    acceptance: "AC2, AC5"
+
+  - id: R3-force-combo-flag
+    description: "Add --force-combo <name> CLI flag to orchestrate-v4.ts that bypasses tier-resolver"
+    file: "Skills/zo-swarm-orchestrator/scripts/orchestrate-v4.ts"
+    priority: high
+    acceptance: "AC3"
+
+  - id: R4-env-dedup
+    description: "Remove empty API_KEY_SECRET= on line 10 of OmniRoute/.env"
+    file: "OmniRoute/.env"
+    priority: medium
+    acceptance: "AC4"
+
+  - id: R5-verify
+    description: "Run bridge tests on all 4 executors with SWARM_RESOLVED_MODEL=swarm-heavy and verify pass"
+    priority: high
+    acceptance: "AC5"
+    dependsOn: ["R1-codex-model-map", "R2-gemini-omniroute-fallback"]
+
+evaluation_principles:
+  - name: correctness
+    description: "Each fix resolves its root cause without side effects"
+    weight: 0.4
+  - name: backwards_compatibility
+    description: "Existing swarm campaigns continue to work unchanged"
+    weight: 0.3
+  - name: resilience
+    description: "Fallbacks exist when primary paths fail"
+    weight: 0.3
+
+exit_conditions:
+  - name: all_bridges_pass
+    description: "All 4 executor bridges pass with swarm-heavy"
+    criteria: "SWARM_RESOLVED_MODEL=swarm-heavy bridge-test returns BRIDGE_OK for claude-code, hermes, gemini, codex"
+  - name: force_combo_works
+    description: "Orchestrator --force-combo routes all tasks to specified combo"
+    criteria: "NDJSON log shows 'override' method for all tasks when --force-combo is used"
+  - name: omniroute_api_unblocked
+    description: "OmniRoute /api/combos returns 200 without auth header"
+    criteria: "curl http://localhost:20128/api/combos returns JSON array"
