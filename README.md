@@ -1,8 +1,10 @@
-# Zo Swarm Orchestrator
+# Zouroboros Swarm Orchestrator
 
 > Coordinate multiple AI agents in parallel on [Zo Computer](https://zo.computer). Define tasks, declare dependencies, and let the orchestrator route work to the right agent with automatic memory management, retries, and structured logging.
+>
+> Part of the [Zouroboros](https://github.com/marlandoj) ecosystem — self-improving AI development tools for Zo Computer.
 
-[![Version](https://img.shields.io/badge/version-4.9.0_Dynamic_OmniRoute_Resolution-blue?style=flat-square)](https://github.com/marlandoj/zo-swarm-orchestrator)
+[![Version](https://img.shields.io/badge/version-4.9.0_Dynamic_OmniRoute_Resolution-blue?style=flat-square)](https://github.com/marlandoj/zouroboros-swarm-orchestrator)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
@@ -12,7 +14,7 @@
 This skill turns a list of tasks into a coordinated multi-agent workflow:
 
 - **DAG Task Dependencies** -- Tasks declare what they depend on. The orchestrator builds a graph and runs tasks as soon as their dependencies complete
-- **Local-Only Execution** -- All tasks route through local executor bridges (Claude Code, Hermes, Gemini, Codex) via [zo-swarm-executors](https://github.com/marlandoj/zo-swarm-executors). No API calls, no API credentials needed
+- **Local-Only Execution** -- All tasks route through local executor bridges (Claude Code, Hermes, Gemini, Codex) via [zouroboros-swarm-executors](https://github.com/marlandoj/zouroboros-swarm-executors). No API calls, no API credentials needed
 - **6-Signal Routing** -- Scores executors on capability, health, complexity fit, past performance, procedural learning, and episodic performance to pick the best agent for each task
 - **Auto-Episodes** -- Every swarm run creates a memory episode with outcome, duration, executor list, and task results for querying later
 - **Token-Aware Memory** -- Four memory strategies (none, sliding, hierarchical, sequential) prevent context window exhaustion
@@ -392,7 +394,7 @@ Full list in [`SKILL.md`](SKILL.md).
 ## Repository Structure
 
 ```
-zo-swarm-orchestrator/
+zouroboros-swarm-orchestrator/
 ├── SKILL.md                          # Full documentation (v4.9)
 ├── README.md                         # This file
 ├── config.json                       # Runtime configuration
@@ -431,16 +433,16 @@ zo-swarm-orchestrator/
 
 ## Related Skills
 
-- [zo-swarm-executors](https://github.com/marlandoj/zo-swarm-executors) -- Bridge scripts and registry for local executors
-- [zo-memory-system](https://github.com/marlandoj/zo-memory-system) -- Shared memory that all personas read and write
-- [zo-persona-creator](https://github.com/marlandoj/zo-persona-creator) -- Create new personas to add to your swarm
+- [zouroboros-swarm-executors](https://github.com/marlandoj/zouroboros-swarm-executors) -- Bridge scripts and registry for local executors
+- [zouroboros-memory-system](https://github.com/marlandoj/zouroboros-memory-system) -- Shared memory that all personas read and write
+- [zouroboros-persona-creator](https://github.com/marlandoj/zouroboros-persona-creator) -- Create new personas to add to your swarm
 
 ---
 
 ## Requirements
 
 - **Runtime:** [Bun](https://bun.sh) v1.2+
-- **Local executors:** [zo-swarm-executors](https://github.com/marlandoj/zo-swarm-executors) — all tasks route through local executor bridges
+- **Local executors:** [zouroboros-swarm-executors](https://github.com/marlandoj/zouroboros-swarm-executors) — all tasks route through local executor bridges
 
 ---
 
