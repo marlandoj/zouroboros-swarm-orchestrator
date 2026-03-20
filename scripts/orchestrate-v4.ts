@@ -55,6 +55,43 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync, unlinkSync } from "
 import { Database } from "bun:sqlite";
 import { randomUUID } from "crypto";
 
+// Wikilink resolution for cross-task context enrichment
+const WIKILINK_RE = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+function resolveOutputWikilinks(output: string): string {
+  const matches: string[] = [];
+  let m: RegExpExecArray | null;
+  WIKILINK_RE.lastIndex = 0;
+  const seen = new Set<string>();
+  while ((m = WIKILINK_RE.exec(output)) !== null) {
+    const entity = m[1].trim();
+    if (!seen.has(entity)) {
+      seen.add(entity);
+      matches.push(entity);
+    }
+  }
+  if (matches.length === 0) return "";
+  try {
+    const dbPath = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
+    const db = new Database(dbPath, { readonly: true });
+    const nowSec = Math.floor(Date.now() / 1000);
+    const stmt = db.prepare(
+      "SELECT entity, key, value FROM facts WHERE entity = ? AND value != '' AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at DESC LIMIT 1"
+    );
+    const entries: string[] = [];
+    for (const entity of matches) {
+      const row = stmt.get(entity, nowSec) as { entity: string; key: string; value: string } | null;
+      if (row) {
+        entries.push(`- [[${row.entity}]].${row.key}: ${row.value.slice(0, 150)}`);
+      }
+    }
+    db.close();
+    if (entries.length === 0) return "";
+    return `\n### Resolved Wikilinks\n${entries.join("\n")}`;
+  } catch {
+    return "";
+  }
+}
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -1755,10 +1792,11 @@ class TokenOptimizedOrchestrator {
         }
 
         // R2: Track completed output for cross-task sliding window context
+        const wikilinkContext = resolveOutputWikilinks(output);
         this.completedOutputs.push({
           persona: executorId,
           category: task.memoryMetadata?.category || "general",
-          summary: output.slice(0, 200),
+          summary: output.slice(0, 200) + wikilinkContext,
         });
 
         task.persona = originalPersona; if (task.executor !== undefined) task.executor = originalExecutor;
@@ -1813,10 +1851,11 @@ class TokenOptimizedOrchestrator {
                   outputToMemory: task.outputToMemory,
                 });
               }
+              const omniWikilinkContext = resolveOutputWikilinks(output);
               this.completedOutputs.push({
                 persona: "omniroute",
                 category: task.memoryMetadata?.category || "general",
-                summary: output.slice(0, 200),
+                summary: output.slice(0, 200) + omniWikilinkContext,
               });
 
               task.persona = originalPersona; if (task.executor !== undefined) task.executor = originalExecutor;
