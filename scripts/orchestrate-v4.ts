@@ -179,12 +179,205 @@ interface OrchestratorConfig {
   omniRouteUrl?: string;
   omniRouteModel?: string;  // combo name, e.g. "swarm-failover"
   omniRouteApiKey?: string;
+  // v4.10: Phase 4 — Intelligence features
+  omniRouteBudgetTokens?: number;  // Per-run token cap (default 50000)
+  stagnationEnabled?: boolean;     // Default: true
+  autoUnstuckMode?: "log" | "advisory" | "activate";  // Default: "log"
+  enableStreamingCapture?: boolean; // Default: false
 }
 
-interface CircuitBreaker {
+// v5.0: Circuit Breaker V2 — three-state with category-aware thresholds + exponential backoff
+interface CircuitBreakerV2 {
+  state: "CLOSED" | "OPEN" | "HALF_OPEN";
+  failures: number;            // consecutive failures
+  totalFailures: number;       // lifetime (for reporting)
+  lastFailure: number;         // timestamp
+  lastSuccess: number;         // timestamp
+  cooldownMs: number;          // current cooldown (grows with backoff)
+  baseCooldownMs: number;      // starting cooldown (category-dependent)
+  maxCooldownMs: number;       // cap (default 300_000 = 5 min)
+  backoffMultiplier: number;   // default 2.0
+  probeInFlight: boolean;      // true when HALF_OPEN probe is running
+  failureCategories: Map<ErrorCategory, number>;  // count per error type
+}
+
+// Backward compat alias
+type CircuitBreaker = CircuitBreakerV2;
+
+// Category-aware failure thresholds (how many consecutive failures before OPEN)
+const CB_FAILURE_THRESHOLDS: Record<ErrorCategory, number> = {
+  timeout: 2,
+  rate_limited: 1,
+  permission_denied: 1,
+  context_overflow: 2,
+  mutation_failed: 3,
+  syntax_error: 3,
+  runtime_error: 3,
+  unknown: 3,
+};
+
+// Category-aware base cooldowns (ms)
+const CB_BASE_COOLDOWN_MS: Record<ErrorCategory, number> = {
+  rate_limited: 60_000,
+  permission_denied: 300_000,
+  timeout: 30_000,
+  context_overflow: 30_000,
+  mutation_failed: 15_000,
+  syntax_error: 15_000,
+  runtime_error: 15_000,
+  unknown: 30_000,
+};
+
+const CB_MAX_COOLDOWN_MS = 300_000;  // 5 min cap
+const CB_BACKOFF_MULTIPLIER = 2.0;
+
+function createDefaultCircuitBreaker(): CircuitBreakerV2 {
+  return {
+    state: "CLOSED",
+    failures: 0,
+    totalFailures: 0,
+    lastFailure: 0,
+    lastSuccess: 0,
+    cooldownMs: 30_000,
+    baseCooldownMs: 30_000,
+    maxCooldownMs: CB_MAX_COOLDOWN_MS,
+    backoffMultiplier: CB_BACKOFF_MULTIPLIER,
+    probeInFlight: false,
+    failureCategories: new Map(),
+  };
+}
+
+// v5.0: Backpressure Monitor — tracks executor degradation (slow but alive)
+interface BackpressureState {
+  executorId: string;
+  recentDurationsMs: number[];  // sliding window of last 10 task durations
+  baselineDurationMs: number;   // EMA of healthy durations
+  pressureScore: number;        // 0.0 (healthy) to 1.0 (overloaded)
+  trend: "improving" | "stable" | "degrading";
+}
+
+function createDefaultBackpressure(executorId: string): BackpressureState {
+  return {
+    executorId,
+    recentDurationsMs: [],
+    baselineDurationMs: 30_000,  // 30s default baseline
+    pressureScore: 0.0,
+    trend: "stable",
+  };
+}
+
+function updateBackpressure(state: BackpressureState, durationMs: number): void {
+  state.recentDurationsMs.push(durationMs);
+  if (state.recentDurationsMs.length > 10) state.recentDurationsMs.shift();
+
+  const avgRecent = state.recentDurationsMs.reduce((a, b) => a + b, 0) / state.recentDurationsMs.length;
+  const ratio = state.baselineDurationMs > 0 ? avgRecent / state.baselineDurationMs : 1.0;
+
+  // Pressure thresholds
+  if (ratio < 1.5) state.pressureScore = 0.0;
+  else if (ratio < 2.0) state.pressureScore = 0.3;
+  else if (ratio < 3.0) state.pressureScore = 0.6;
+  else state.pressureScore = 0.9;
+
+  // Update baseline (slow EMA, only from healthy runs)
+  if (ratio < 1.5) {
+    state.baselineDurationMs = state.baselineDurationMs * 0.9 + durationMs * 0.1;
+  }
+
+  // Trend detection
+  if (state.recentDurationsMs.length >= 5) {
+    const firstHalf = state.recentDurationsMs.slice(0, 5).reduce((a, b) => a + b, 0) / 5;
+    const secondHalf = state.recentDurationsMs.slice(-5).reduce((a, b) => a + b, 0) / 5;
+    state.trend = secondHalf < firstHalf * 0.9 ? "improving"
+      : secondHalf > firstHalf * 1.1 ? "degrading" : "stable";
+  }
+}
+
+// Persistence helpers for CircuitBreakerV2
+interface PersistedCircuitState {
+  state: "CLOSED" | "OPEN" | "HALF_OPEN";
   failures: number;
+  totalFailures: number;
+  cooldownMs: number;
   lastFailure: number;
-  isOpen: boolean;
+  lastSuccess: number;
+  failureCategories: Record<string, number>;
+  savedAt: number;  // timestamp for max-age check
+  backpressure?: {
+    baselineDurationMs: number;
+    pressureScore: number;
+  };
+}
+
+const CB_PERSIST_MAX_AGE_MS = 60 * 60 * 1000;  // 1 hour max age for persisted state
+
+function serializeCircuitBreakers(
+  breakers: Map<string, CircuitBreakerV2>,
+  backpressure: Map<string, BackpressureState>
+): Record<string, PersistedCircuitState> {
+  const result: Record<string, PersistedCircuitState> = {};
+  for (const [id, cb] of breakers) {
+    const bp = backpressure.get(id);
+    const cats: Record<string, number> = {};
+    for (const [k, v] of cb.failureCategories) cats[k] = v;
+    result[id] = {
+      state: cb.state,
+      failures: cb.failures,
+      totalFailures: cb.totalFailures,
+      cooldownMs: cb.cooldownMs,
+      lastFailure: cb.lastFailure,
+      lastSuccess: cb.lastSuccess,
+      failureCategories: cats,
+      savedAt: Date.now(),
+      backpressure: bp ? {
+        baselineDurationMs: bp.baselineDurationMs,
+        pressureScore: bp.pressureScore,
+      } : undefined,
+    };
+  }
+  return result;
+}
+
+function deserializeCircuitBreakers(
+  data: Record<string, PersistedCircuitState>
+): { breakers: Map<string, CircuitBreakerV2>; backpressure: Map<string, BackpressureState> } {
+  const breakers = new Map<string, CircuitBreakerV2>();
+  const bp = new Map<string, BackpressureState>();
+  const now = Date.now();
+  for (const [id, persisted] of Object.entries(data)) {
+    // Max-age check: if older than 1 hour, reset to CLOSED
+    if (now - persisted.savedAt > CB_PERSIST_MAX_AGE_MS) {
+      breakers.set(id, createDefaultCircuitBreaker());
+      continue;
+    }
+    const cats = new Map<ErrorCategory, number>();
+    for (const [k, v] of Object.entries(persisted.failureCategories)) {
+      cats.set(k as ErrorCategory, v);
+    }
+    breakers.set(id, {
+      state: persisted.state,
+      failures: persisted.failures,
+      totalFailures: persisted.totalFailures,
+      lastFailure: persisted.lastFailure,
+      lastSuccess: persisted.lastSuccess,
+      cooldownMs: persisted.cooldownMs,
+      baseCooldownMs: 30_000,
+      maxCooldownMs: CB_MAX_COOLDOWN_MS,
+      backoffMultiplier: CB_BACKOFF_MULTIPLIER,
+      probeInFlight: false,  // never persist in-flight state
+      failureCategories: cats,
+    });
+    if (persisted.backpressure) {
+      bp.set(id, {
+        executorId: id,
+        recentDurationsMs: [],
+        baselineDurationMs: persisted.backpressure.baselineDurationMs,
+        pressureScore: persisted.backpressure.pressureScore,
+        trend: "stable",
+      });
+    }
+  }
+  return { breakers, backpressure: bp };
 }
 
 // ============================================================================
@@ -282,6 +475,15 @@ import {
   type ComplexityEstimate as TierResolveEstimate,
   type OmniRouteRecommendation,
 } from "./tier-resolve";
+
+// v4.10: Memory gate (inline import, no subprocess)
+let shouldInjectMemory: ((taskText: string) => Promise<{ inject: boolean; method: string; latency_ms: number }>) | null = null;
+try {
+  const gate = await import("/home/workspace/Skills/zo-memory-system/scripts/memory-gate.ts");
+  shouldInjectMemory = gate.shouldInjectMemory;
+} catch {
+  // Gate module not available — preWarm always runs
+}
 
 const TIER_TO_COMBO: Record<ComplexityTier, string> = { ...STATIC_TIER_TO_COMBO };
 
@@ -403,6 +605,137 @@ function historyScore(executorId: string, category: string): number {
   const entry = history[key];
   if (!entry || entry.attempts < 3) return 0.5;
   return entry.successes / entry.attempts;
+}
+
+// v4.10: Structured error classification (8 categories)
+type ErrorCategory = "timeout" | "mutation_failed" | "syntax_error" | "runtime_error" | "permission_denied" | "rate_limited" | "context_overflow" | "unknown";
+
+interface ErrorClassification {
+  type: ErrorCategory;
+  retryable: boolean;
+  suggestedAction: string;
+}
+
+function classifyError(errorStr: string): ErrorClassification {
+  const lower = errorStr.toLowerCase();
+  if (lower.includes("timeout") || lower.includes("timed out") || lower.includes("deadline exceeded")) {
+    return { type: "timeout", retryable: true, suggestedAction: "increase timeout or simplify task" };
+  }
+  if (lower.includes("mutation verification") || lower.includes("expected file") || lower.includes("mutation_failed")) {
+    return { type: "mutation_failed", retryable: true, suggestedAction: "verify file paths and mutation targets" };
+  }
+  if (lower.includes("syntaxerror") || lower.includes("syntax error") || lower.includes("unexpected token")) {
+    return { type: "syntax_error", retryable: true, suggestedAction: "fix syntax in generated code" };
+  }
+  if (lower.includes("permission") || lower.includes("eacces") || lower.includes("forbidden") || lower.includes("enoent")) {
+    return { type: "permission_denied", retryable: false, suggestedAction: "check file permissions and paths" };
+  }
+  if (lower.includes("rate limit") || lower.includes("429") || lower.includes("too many requests")) {
+    return { type: "rate_limited", retryable: true, suggestedAction: "wait and retry with backoff" };
+  }
+  if (lower.includes("context") && (lower.includes("overflow") || lower.includes("too long") || lower.includes("token limit"))) {
+    return { type: "context_overflow", retryable: true, suggestedAction: "reduce prompt size" };
+  }
+  if (lower.includes("typeerror") || lower.includes("referenceerror") || lower.includes("runtime") || lower.includes("cannot read")) {
+    return { type: "runtime_error", retryable: true, suggestedAction: "check runtime assumptions and dependencies" };
+  }
+  return { type: "unknown", retryable: true, suggestedAction: "inspect error output" };
+}
+
+// v4.10: Stagnation Detection (Phase 4.1)
+interface StagnationSignal {
+  task_id: string;
+  stagnation_score: number;
+  retry_saturation: number;
+  output_similarity: number;
+  open_circuit_ratio: number;
+  suggested_persona: string;
+  timestamp: number;
+}
+
+function jaccardSimilarity(a: string, b: string): number {
+  const tokensA = new Set(a.toLowerCase().split(/\s+/).filter(t => t.length > 2));
+  const tokensB = new Set(b.toLowerCase().split(/\s+/).filter(t => t.length > 2));
+  if (tokensA.size === 0 && tokensB.size === 0) return 1.0;
+  if (tokensA.size === 0 || tokensB.size === 0) return 0.0;
+  let intersection = 0;
+  for (const t of tokensA) { if (tokensB.has(t)) intersection++; }
+  return intersection / (tokensA.size + tokensB.size - intersection);
+}
+
+function detectStagnation(
+  results: TaskResult[],
+  currentTask: Task,
+  circuitBreakers: Map<string, CircuitBreaker>,
+  retryOutputs: string[]
+): StagnationSignal | null {
+  if (process.env.SWARM_STAGNATION_ENABLED === "false") return null;
+  if ((currentTask as any).stagnation_exempt) return null;
+
+  const totalTasks = results.length + 1; // +1 for current
+  const retriesExhausted = results.filter(r => !r.success && r.retries >= 2).length;
+  const retrySaturation = totalTasks > 0 ? retriesExhausted / totalTasks : 0;
+
+  // Output similarity between consecutive retry outputs
+  let outputSimilarity = 0;
+  if (retryOutputs.length >= 2) {
+    const sims: number[] = [];
+    for (let i = 1; i < retryOutputs.length; i++) {
+      sims.push(jaccardSimilarity(retryOutputs[i - 1], retryOutputs[i]));
+    }
+    outputSimilarity = sims.reduce((a, b) => a + b, 0) / sims.length;
+  }
+
+  // Open circuit breaker ratio
+  const totalExecutors = circuitBreakers.size || 1;
+  let openCount = 0;
+  for (const [, cb] of circuitBreakers) { if (cb.state === "OPEN") openCount++; }
+  const openCircuitRatio = openCount / totalExecutors;
+
+  // Composite score: 0.5 * retry_sat + 0.3 * output_sim + 0.2 * circuit_ratio
+  const score = Math.min(1.0, 0.5 * retrySaturation + 0.3 * outputSimilarity + 0.2 * openCircuitRatio);
+
+  if (score <= 0.6) return null;
+
+  const persona = suggestUnstuckPersona(
+    { retrySaturation, outputSimilarity, openCircuitRatio },
+    currentTask
+  );
+
+  return {
+    task_id: currentTask.id,
+    stagnation_score: score,
+    retry_saturation: retrySaturation,
+    output_similarity: outputSimilarity,
+    open_circuit_ratio: openCircuitRatio,
+    suggested_persona: persona,
+    timestamp: Date.now(),
+  };
+}
+
+// v4.10: Auto-Unstuck Persona Suggestion (Phase 4.2)
+function suggestUnstuckPersona(
+  signals: { retrySaturation: number; outputSimilarity: number; openCircuitRatio: number },
+  task: Task
+): string {
+  const category = task.memoryMetadata?.category || "";
+
+  // Rule-based mapping per seed spec
+  if (signals.outputSimilarity > 0.7) return "Simplifier";
+  if (signals.openCircuitRatio > 0.5) return "Architect";
+  if (signals.retrySaturation > 0.5) return "Hacker";
+  if (category.includes("research") || category.includes("analysis")) return "Researcher";
+  return "Contrarian";
+}
+
+// v4.10: OmniRoute Health State (Phase 4.5)
+interface OmniRouteHealthState {
+  healthy: boolean;
+  lastProbe: number;
+  circuitOpen: boolean;
+  consecutiveFailures: number;
+  lastFailure: number;
+  budgetUsedTokens: number;
 }
 
 function recordOutcome(
@@ -1071,7 +1404,8 @@ class TokenOptimizedOrchestrator {
   private memoryManager: MemoryManager | null = null;
   private swarmId: string;
   private sessionId: string;
-  private circuitBreakers: Map<string, CircuitBreaker> = new Map();
+  private circuitBreakers: Map<string, CircuitBreakerV2> = new Map();
+  private backpressureStates: Map<string, BackpressureState> = new Map();
   private results: TaskResult[] = [];
   private completedOutputs: Array<{ persona: string; category: string; summary: string }> = [];
   private logger: NdjsonLogger;
@@ -1099,6 +1433,9 @@ class TokenOptimizedOrchestrator {
 
     // Load local executors from persona registry
     this.loadLocalExecutors();
+
+    // v5.0: Load persisted circuit breaker state
+    this.loadCircuitBreakerState();
   }
 
   private loadLocalExecutors(): void {
@@ -1379,18 +1716,35 @@ class TokenOptimizedOrchestrator {
     console.log(`   ✓ Preflight passed (${tasks.length} tasks validated)`);
     this.logger.log("preflight_passed", { taskCount: tasks.length });
 
-    // R3: Pre-warm memory with domain-relevant facts
+    // R3: Pre-warm memory with domain-relevant facts (v4.10: gated by memory-gate)
     if (this.memoryManager) {
       const domain = this.swarmId.replace(/^swarm_\d+$/, "")
         || tasks[0]?.memoryMetadata?.tags?.[0]
         || tasks[0]?.task.split(" ").slice(0, 3).join(" ")
         || "general";
-      const preWarmStart = Date.now();
-      const seeded = await this.memoryManager.preWarm(domain);
-      const preWarmMs = Date.now() - preWarmStart;
-      if (seeded > 0) {
-        console.log(`   Pre-warmed ${seeded} facts in ${preWarmMs}ms`);
-        this.logger.log("prewarm_complete", { domain, seeded, durationMs: preWarmMs });
+
+      // Memory gate: determine if preWarm is worth it for this domain
+      let gateDecision = { inject: true, method: "no_gate", latency_ms: 0 };
+      if (shouldInjectMemory) {
+        try {
+          const taskSample = tasks.slice(0, 3).map(t => t.task).join(" ").slice(0, 500);
+          gateDecision = await shouldInjectMemory(taskSample);
+        } catch {
+          gateDecision = { inject: true, method: "gate_error_fallback", latency_ms: 0 };
+        }
+      }
+
+      if (gateDecision.inject) {
+        const preWarmStart = Date.now();
+        const seeded = await this.memoryManager.preWarm(domain);
+        const preWarmMs = Date.now() - preWarmStart;
+        if (seeded > 0) {
+          console.log(`   Pre-warmed ${seeded} facts in ${preWarmMs}ms (gate: ${gateDecision.method})`);
+          this.logger.log("prewarm_complete", { domain, seeded, durationMs: preWarmMs, gateMethod: gateDecision.method });
+        }
+      } else {
+        console.log(`   [gate: skip] PreWarm skipped (method=${gateDecision.method}, ${gateDecision.latency_ms}ms)`);
+        this.logger.log("prewarm_skipped", { domain, gateMethod: gateDecision.method, gateLatencyMs: gateDecision.latency_ms });
       }
     }
 
@@ -1470,6 +1824,59 @@ class TokenOptimizedOrchestrator {
           entities: [cat, ...(result.task.memoryMetadata?.tags || [])],
         });
       }
+    }
+
+    // Auto-procedure creation from successful swarms (Phase 2)
+    // When swarm completes with >=3 tasks, all succeeded, >=2 distinct executors,
+    // record the workflow as a reusable procedure.
+    if (
+      overallOutcome === "success" &&
+      this.results.length >= 3 &&
+      executorsUsed.length >= 2
+    ) {
+      (async () => {
+        try {
+          const { Database } = await import("bun:sqlite");
+          const dbPath = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
+          const db = new Database(dbPath);
+
+          // Build pattern signature: category + sorted unique verbs from task descriptions
+          const category = tasks[0]?.memoryMetadata?.category || "general";
+          const verbs = [...new Set(
+            tasks.map(t => {
+              const firstWord = (t.description || t.text || "").trim().split(/\s+/)[0]?.toLowerCase();
+              return firstWord || "unknown";
+            })
+          )].sort();
+          const procName = `swarm.auto.${category}.${verbs.join("+")}`;
+
+          // Check if procedure already exists
+          const existing = db.prepare(
+            "SELECT id FROM procedures WHERE name = ? ORDER BY version DESC LIMIT 1"
+          ).get(procName) as { id: string } | null;
+
+          if (!existing) {
+            const steps = this.results.map(r => ({
+              executor: r.task.persona,
+              taskPattern: (r.task.description || r.task.text || "").slice(0, 200),
+              timeoutSeconds: Math.ceil((r.durationMs || 60000) / 1000 * 1.5),
+              notes: `auto-generated from swarm ${this.swarmId}`,
+            }));
+
+            const id = crypto.randomUUID();
+            const nowSec = Math.floor(Date.now() / 1000);
+            db.prepare(`
+              INSERT INTO procedures (id, name, version, steps, success_count, failure_count, evolved_from, created_at)
+              VALUES (?, ?, 1, ?, 0, 0, NULL, ?)
+            `).run(id, procName, JSON.stringify(steps), nowSec);
+
+            console.log(`\u{1F4CB} Auto-procedure created: ${procName} (${steps.length} steps)`);
+          }
+          db.close();
+        } catch (err) {
+          console.log(`  [auto-procedure] Skipped: ${err}`);
+        }
+      })();
     }
 
     // Update swarm session status in swarm-memory.db
@@ -1754,7 +2161,14 @@ class TokenOptimizedOrchestrator {
             : `static (tier=${resolution.tier})`;
         console.log(`  ${methodIcon} [${task.id}] Model: ${resolvedModel} — ${methodLabel}`);
         this.logger.log("model_resolution", { taskId: task.id, combo: resolvedModel, method: resolution.method, taskType: resolution.taskType, tier: resolution.tier });
-        const output = await this.callAgent(executorId, prompt, task.timeoutSeconds, resolvedModel);
+
+        // v5.0: HALF_OPEN probe gets 50% timeout (fail fast)
+        const cbForTimeout = this.circuitBreakers.get(executorId);
+        const isProbe = cbForTimeout?.state === "HALF_OPEN" && cbForTimeout?.probeInFlight;
+        const effectiveTimeout = isProbe
+          ? Math.round((task.timeoutSeconds || this.config.timeoutSeconds) * 0.5)
+          : task.timeoutSeconds;
+        const output = await this.callAgent(executorId, prompt, effectiveTimeout, resolvedModel, task.id);
         const outputTokens = this.estimateTokens(output);
 
         // R3: Post-mutation verification — check expected file changes were applied
@@ -1771,8 +2185,9 @@ class TokenOptimizedOrchestrator {
           this.logger.log("mutation_verification_passed", { taskId: task.id, checks: task.expectedMutations.length });
         }
 
-        // Record success (circuit breaker + history + cognitive profile)
+        // Record success (circuit breaker + history + cognitive profile + backpressure)
         this.recordSuccess(executorId);
+        this.updateBackpressureForExecutor(executorId, Date.now() - startTime);
         const taskEntities = [category, ...(task.memoryMetadata?.tags || [])];
         recordOutcome(executorId, category, true, Date.now() - startTime, {
           entities: taskEntities,
@@ -1789,6 +2204,22 @@ class TokenOptimizedOrchestrator {
               outputToMemory: task.outputToMemory,
             }
           );
+        }
+
+        // v4.10: Streaming fact capture (Phase 4.4) — async, non-blocking
+        if (this.config.enableStreamingCapture || process.env.SWARM_STREAMING_CAPTURE === "true") {
+          (async () => {
+            try {
+              const { captureStreaming } = await import("/home/workspace/Skills/zo-memory-system/scripts/streaming-capture.ts");
+              await captureStreaming(output, {
+                runId: this.swarmId,
+                taskId: task.id,
+                category: task.memoryMetadata?.category || "general",
+              });
+            } catch (e) {
+              console.log(`  [streaming-capture] Skipped: ${e}`);
+            }
+          })();
         }
 
         // R2: Track completed output for cross-task sliding window context
@@ -1811,22 +2242,49 @@ class TokenOptimizedOrchestrator {
 
       } catch (error) {
         retries++;
-        // Record failure (circuit breaker + history + cognitive profile)
-        this.recordFailure(executorId);
         const errorStr = String(error);
-        const errorType = errorStr.includes("timeout") ? "timeout"
-          : errorStr.includes("Mutation verification") ? "mutation_failed"
-          : errorStr.includes("ENOENT") ? "file_not_found"
-          : errorStr.includes("permission") ? "permission_denied"
-          : "unknown";
+        const classified = classifyError(errorStr);
+        // Record failure with error category (circuit breaker + history + cognitive profile + backpressure)
+        this.recordFailure(executorId, classified.type);
+        this.updateBackpressureForExecutor(executorId, Date.now() - startTime);
         const failEntities = [category, ...(task.memoryMetadata?.tags || [])];
         recordOutcome(executorId, category, false, Date.now() - startTime, {
-          errorType,
+          errorType: classified.type,
           entities: failEntities,
         });
 
-        console.log(`  ⚠️  [${task.id}] ${executorId} failed (attempt ${retries}): ${error}`);
-        this.logger.log("task_error", { taskId: task.id, persona: executorId, attempt: retries, error: errorStr });
+        console.log(`  ⚠️  [${task.id}] ${executorId} failed (attempt ${retries}, ${classified.type}): ${error}`);
+        this.logger.log("task_error", { taskId: task.id, persona: executorId, attempt: retries, error: errorStr, errorType: classified.type, retryable: classified.retryable });
+
+        // v4.10: Store failure context for next attempt's prompt injection
+        if (!task.memoryMetadata) task.memoryMetadata = {};
+        task.memoryMetadata.previousAttemptContext = {
+          error: errorStr.slice(0, 500),
+          error_type: classified.type,
+          suggested_action: classified.suggestedAction,
+          previous_executor: executorId,
+        };
+
+        // v4.10: Stagnation detection (Phase 4.1)
+        if (!this._retryOutputs) this._retryOutputs = new Map();
+        const taskRetryOutputs = this._retryOutputs.get(task.id) || [];
+        taskRetryOutputs.push(errorStr.slice(0, 1000));
+        this._retryOutputs.set(task.id, taskRetryOutputs);
+
+        const stagnation = detectStagnation(this.results, task, this.circuitBreakers, taskRetryOutputs);
+        if (stagnation) {
+          console.log(`  \u{1F6A8} [${task.id}] Stagnation detected: score=${stagnation.stagnation_score.toFixed(2)} ` +
+            `(retry=${stagnation.retry_saturation.toFixed(2)} sim=${stagnation.output_similarity.toFixed(2)} ` +
+            `circuit=${stagnation.open_circuit_ratio.toFixed(2)}) -> ${stagnation.suggested_persona}`);
+          this.logger.log("stagnation_detected", stagnation);
+
+          const unstuckMode = this.config.autoUnstuckMode || process.env.SWARM_AUTO_UNSTUCK || "log";
+          if (unstuckMode === "advisory" || unstuckMode === "activate") {
+            // Inject persona context into next retry
+            task.memoryMetadata.previousAttemptContext.suggested_persona = stagnation.suggested_persona;
+            task.memoryMetadata.previousAttemptContext.stagnation_score = stagnation.stagnation_score;
+          }
+        }
 
         if (retries <= this.config.maxRetries) {
           // Reroute on next iteration — the failed executor's health score
@@ -1835,21 +2293,28 @@ class TokenOptimizedOrchestrator {
           console.log(`  ⏳ [${task.id}] Will reroute in ${delay}ms...`);
           await this.sleep(delay);
         } else {
-          // v4.6: OmniRoute last-resort fallback before giving up
-          if (this.config.omniRouteEnabled) {
-            try {
-              console.log(`  🌐 [${task.id}] All local executors exhausted, trying OmniRoute fallback...`);
-              const omniPrompt = await this.buildOptimizedPrompt(task);
-              const output = await this.callOmniRoute(omniPrompt, task.timeoutSeconds, resolvedModel);
-              const outputTokens = this.estimateTokens(output);
+          // v4.6+4.10: OmniRoute last-resort fallback with health probe, circuit breaker, budget cap
+          if (this.config.omniRouteEnabled || process.env.SWARM_OMNIROUTE_ENABLED === "true") {
+            // Initialize OmniRoute health state
+            if (!this._omniRouteHealth) {
+              this._omniRouteHealth = {
+                healthy: true, lastProbe: 0, circuitOpen: false,
+                consecutiveFailures: 0, lastFailure: 0, budgetUsedTokens: 0,
+              } as OmniRouteHealthState;
+            }
+            const orHealth = this._omniRouteHealth as OmniRouteHealthState;
 
-              this.logger.log("task_success_omniroute", { taskId: task.id, durationMs: Date.now() - startTime, outputTokens });
-
-              if (this.memoryManager) {
-                this.memoryManager.addAgentOutput("omniroute", output, {
-                  ...task.memoryMetadata,
-                  outputToMemory: task.outputToMemory,
-                });
+            // Check circuit breaker (2 failures, 120s reset)
+            let orSkip = false;
+            if (orHealth.circuitOpen) {
+              if (Date.now() - orHealth.lastFailure > 120_000) {
+                orHealth.circuitOpen = false;
+                orHealth.consecutiveFailures = 0;
+                console.log(`  🟢 [${task.id}] OmniRoute circuit breaker reset`);
+              } else {
+                console.log(`  ⚠️ [${task.id}] OmniRoute circuit breaker open, skipping fallback`);
+                this.logger.log("omniroute_circuit_open", { taskId: task.id });
+                orSkip = true;
               }
               const omniWikilinkContext = resolveOutputWikilinks(output);
               this.completedOutputs.push({
@@ -1858,18 +2323,142 @@ class TokenOptimizedOrchestrator {
                 summary: output.slice(0, 200) + omniWikilinkContext,
               });
 
-              task.persona = originalPersona; if (task.executor !== undefined) task.executor = originalExecutor;
-              return {
-                task,
-                success: true,
-                output,
-                durationMs: Date.now() - startTime,
-                retries,
-                tokensUsed: this.estimateTokens(omniPrompt) + outputTokens,
-              };
-            } catch (omniError) {
-              console.log(`  ❌ [${task.id}] OmniRoute fallback also failed: ${omniError}`);
-              this.logger.log("omniroute_fallback_failed", { taskId: task.id, error: String(omniError) });
+            // Check budget cap
+            const budgetCap = this.config.omniRouteBudgetTokens || parseInt(process.env.OMNIROUTE_BUDGET_TOKENS || "50000");
+            if (!orSkip && orHealth.budgetUsedTokens >= budgetCap) {
+              console.log(`  💰 [${task.id}] OmniRoute budget exhausted (${orHealth.budgetUsedTokens}/${budgetCap} tokens)`);
+              this.logger.log("omniroute_budget_exhausted", { taskId: task.id, used: orHealth.budgetUsedTokens, cap: budgetCap });
+              orSkip = true;
+            }
+
+            // Check category effectiveness
+            const omniCategory = task.memoryMetadata?.category || "general";
+            const orHist = loadHistory();
+            const omniKey = `omniroute:${omniCategory}`;
+            const omniEntry = orHist[omniKey] as any;
+            const effectiveness = omniEntry?.omniroute_effectiveness?.[omniCategory] ?? 0.5;
+            if (!orSkip && effectiveness < 0.3) {
+              console.log(`  📉 [${task.id}] OmniRoute effectiveness too low for ${omniCategory}: ${effectiveness.toFixed(2)}`);
+              this.logger.log("omniroute_low_effectiveness", { taskId: task.id, category: omniCategory, effectiveness });
+              orSkip = true;
+            }
+
+            // Health probe (cached 60s)
+            if (!orSkip && Date.now() - orHealth.lastProbe > 60_000) {
+              try {
+                const probeUrl = (this.config.omniRouteUrl || process.env.OMNIROUTE_URL || "http://localhost:11434") + "/api/tags";
+                const probeResp = await Promise.race([
+                  fetch(probeUrl),
+                  new Promise<never>((_, rej) => setTimeout(() => rej(new Error("probe timeout")), 3000))
+                ]);
+                orHealth.healthy = (probeResp as Response).ok;
+                orHealth.lastProbe = Date.now();
+              } catch {
+                orHealth.healthy = false;
+                orHealth.lastProbe = Date.now();
+              }
+              if (!orHealth.healthy) {
+                console.log(`  🚫 [${task.id}] OmniRoute unhealthy, skipping fallback`);
+                this.logger.log("omniroute_unhealthy", { taskId: task.id });
+                orSkip = true;
+              }
+            }
+
+            // Attempt fallback if all checks pass
+            if (!orSkip) {
+              const omniStart = Date.now();
+              try {
+                console.log(`  🌐 [${task.id}] All local executors exhausted, trying OmniRoute fallback...`);
+                const omniPrompt = await this.buildOptimizedPrompt(task);
+                const output = await this.callOmniRoute(omniPrompt, task.timeoutSeconds, resolvedModel);
+                const outputTokens = this.estimateTokens(output);
+                const omniLatency = Date.now() - omniStart;
+
+                orHealth.budgetUsedTokens += this.estimateTokens(omniPrompt) + outputTokens;
+                orHealth.consecutiveFailures = 0;
+
+                this.logger.log("task_success_omniroute", { taskId: task.id, durationMs: omniLatency, outputTokens });
+
+                // v4.10: Record OmniRoute outcome (Phase 4.6)
+                recordOutcome("omniroute", omniCategory, true, omniLatency, {
+                  entities: [omniCategory, "omniroute"],
+                });
+
+                // Update omniroute_effectiveness EMA (alpha=0.2)
+                const hist2 = loadHistory();
+                if (!hist2[omniKey]) hist2[omniKey] = { attempts: 0, successes: 0, failures: 0, totalDuration: 0, lastOutcome: "" };
+                if (!(hist2[omniKey] as any).omniroute_effectiveness) (hist2[omniKey] as any).omniroute_effectiveness = {};
+                const prevEff = (hist2[omniKey] as any).omniroute_effectiveness[omniCategory] ?? 0.5;
+                (hist2[omniKey] as any).omniroute_effectiveness[omniCategory] = 0.2 * 1.0 + 0.8 * prevEff;
+                try { writeFileSync(join(process.env.HOME || "/root", ".swarm", "executor-history.json"), JSON.stringify(hist2, null, 2)); } catch {}
+
+                // v4.10: OmniRoute episode (Phase 4.6) — async fire-and-forget
+                (async () => {
+                  try {
+                    const { Database: Db } = await import("bun:sqlite");
+                    const { createEpisodeRecord } = await import("/home/workspace/Skills/zo-memory-system/scripts/continuation.ts");
+                    const dbPath2 = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
+                    const db2 = new Db(dbPath2);
+                    createEpisodeRecord(db2, {
+                      summary: `OmniRoute fallback: ${task.id} (${omniCategory}) -> success in ${omniLatency}ms`,
+                      outcome: "success",
+                      happenedAt: Math.floor(Date.now() / 1000),
+                      entities: ["omniroute", `task.${task.id}`, omniCategory],
+                      metadata: { task_id: task.id, task_category: omniCategory, original_failure_reason: errorStr.slice(0, 200), omniroute_success: true, latency_ms: omniLatency, token_cost: orHealth.budgetUsedTokens },
+                    });
+                    db2.close();
+                  } catch {}
+                })();
+
+                if (this.memoryManager) {
+                  this.memoryManager.addAgentOutput("omniroute", output, { ...task.memoryMetadata, outputToMemory: task.outputToMemory });
+                }
+                this.completedOutputs.push({ persona: "omniroute", category: omniCategory, summary: output.slice(0, 200) });
+
+                task.persona = originalPersona; if (task.executor !== undefined) task.executor = originalExecutor;
+                return {
+                  task, success: true, output,
+                  durationMs: Date.now() - startTime, retries,
+                  tokensUsed: this.estimateTokens(omniPrompt) + outputTokens,
+                };
+              } catch (omniError) {
+                const omniLatency = Date.now() - omniStart;
+                orHealth.consecutiveFailures++;
+                orHealth.lastFailure = Date.now();
+                if (orHealth.consecutiveFailures >= 2) {
+                  orHealth.circuitOpen = true;
+                  console.log(`  🔴 [${task.id}] OmniRoute circuit breaker OPENED (${orHealth.consecutiveFailures} failures)`);
+                }
+
+                // EMA on failure
+                const hist3 = loadHistory();
+                if (!hist3[omniKey]) hist3[omniKey] = { attempts: 0, successes: 0, failures: 0, totalDuration: 0, lastOutcome: "" };
+                if (!(hist3[omniKey] as any).omniroute_effectiveness) (hist3[omniKey] as any).omniroute_effectiveness = {};
+                const prevEffF = (hist3[omniKey] as any).omniroute_effectiveness[omniCategory] ?? 0.5;
+                (hist3[omniKey] as any).omniroute_effectiveness[omniCategory] = 0.2 * 0.0 + 0.8 * prevEffF;
+                try { writeFileSync(join(process.env.HOME || "/root", ".swarm", "executor-history.json"), JSON.stringify(hist3, null, 2)); } catch {}
+
+                // Episode for failed fallback
+                (async () => {
+                  try {
+                    const { Database: Db } = await import("bun:sqlite");
+                    const { createEpisodeRecord } = await import("/home/workspace/Skills/zo-memory-system/scripts/continuation.ts");
+                    const dbPath2 = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
+                    const db2 = new Db(dbPath2);
+                    createEpisodeRecord(db2, {
+                      summary: `OmniRoute fallback: ${task.id} (${omniCategory}) -> FAILED in ${omniLatency}ms`,
+                      outcome: "failure",
+                      happenedAt: Math.floor(Date.now() / 1000),
+                      entities: ["omniroute", `task.${task.id}`, omniCategory],
+                      metadata: { task_id: task.id, task_category: omniCategory, original_failure_reason: errorStr.slice(0, 200), omniroute_success: false, latency_ms: omniLatency, error: String(omniError).slice(0, 300) },
+                    });
+                    db2.close();
+                  } catch {}
+                })();
+
+                console.log(`  ❌ [${task.id}] OmniRoute fallback also failed: ${omniError}`);
+                this.logger.log("omniroute_fallback_failed", { taskId: task.id, error: String(omniError), consecutiveFailures: orHealth.consecutiveFailures });
+              }
             }
           }
 
@@ -2070,12 +2659,46 @@ CRITICAL RULES:
         `Reference these to avoid duplication and provide cross-domain insights.\n\n${entries}`;
     }
 
-    // Assemble prompt: persona + memory context + cross-task context + base task
+    // v4.10 + Spec 2: Inject previous attempt failure context if retrying
+    // Cap error.message at 500 chars; never inject stackTrace into retry prompts
+    let failureContext = "";
+    const prevCtx = task.memoryMetadata?.previousAttemptContext;
+    if (prevCtx) {
+      const cappedError = (prevCtx.error || "").slice(0, 500);
+      failureContext = `<previous-attempt-context>
+The previous attempt by "${prevCtx.previous_executor}" failed with error type: ${prevCtx.error_type}
+Error: ${cappedError}
+Suggested action: ${prevCtx.suggested_action}
+Adjust your approach to avoid this failure mode.
+</previous-attempt-context>`;
+    }
+
+    // Assemble prompt: persona + failure context + memory context + cross-task context + base task
     let fullPrompt = "";
 
     // v4.9: Persona identity comes first — sets the executor's behavioral frame
     if (personaContext) {
       fullPrompt += personaContext + "\n\n";
+    }
+
+    if (failureContext) {
+      fullPrompt += failureContext + "\n\n";
+    }
+
+    // v4.10: Auto-unstuck persona advisory injection (Phase 4.2)
+    if (prevCtx?.suggested_persona && prevCtx?.stagnation_score) {
+      const unstuckMode = this.config.autoUnstuckMode || process.env.SWARM_AUTO_UNSTUCK || "log";
+      if (unstuckMode === "advisory" || unstuckMode === "activate") {
+        fullPrompt += `<unstuck-advisory>\n` +
+          `Stagnation detected (score: ${prevCtx.stagnation_score.toFixed(2)}). ` +
+          `Consider approaching this as a "${prevCtx.suggested_persona}" would: ` +
+          `${prevCtx.suggested_persona === "Simplifier" ? "break the problem into smaller parts, reduce complexity" :
+            prevCtx.suggested_persona === "Architect" ? "step back, reconsider the overall approach and design" :
+            prevCtx.suggested_persona === "Hacker" ? "try unconventional shortcuts, bypass normal constraints" :
+            prevCtx.suggested_persona === "Researcher" ? "gather more information before acting, investigate root causes" :
+            "challenge assumptions, consider the opposite of what has been tried"}.\n` +
+          `</unstuck-advisory>\n\n`;
+      }
     }
 
     if (memoryContext) {
@@ -2135,15 +2758,15 @@ CRITICAL RULES:
   // AGENT COMMUNICATION
   // --------------------------------------------------------------------------
 
-  private async callAgent(persona: string, prompt: string, taskTimeoutSeconds?: number, resolvedModel?: string): Promise<string> {
+  private async callAgent(persona: string, prompt: string, taskTimeoutSeconds?: number, resolvedModel?: string, taskId?: string): Promise<string> {
     const localExec = this.localExecutors.get(persona);
     if (!localExec) {
       throw new Error(`No local executor found for persona: ${persona}. Register an executor in the executor registry.`);
     }
-    return this.callLocalAgent(localExec, prompt, taskTimeoutSeconds, resolvedModel);
+    return this.callLocalAgent(localExec, prompt, taskTimeoutSeconds, resolvedModel, taskId);
   }
 
-  private async callLocalAgent(executor: LocalExecutor, prompt: string, taskTimeoutSeconds?: number, resolvedModel?: string): Promise<string> {
+  private async callLocalAgent(executor: LocalExecutor, prompt: string, taskTimeoutSeconds?: number, resolvedModel?: string, taskId?: string): Promise<string> {
     const effectiveTimeout = taskTimeoutSeconds || this.config.timeoutSeconds;
     const timeoutMs = effectiveTimeout * 1000;
 
@@ -2155,6 +2778,13 @@ CRITICAL RULES:
     console.log(`  🖥️  [${executor.id}] Routing to local executor: ${executor.name} (model: ${modelLabel})`);
     this.logger.log("local_executor_start", { executor: executor.id, bridge: executor.bridge, model: modelLabel });
 
+    // Spec 2: Structured result file path for this task
+    const resultFileName = taskId ? `result-${taskId}.json` : `result-${randomUUID()}.json`;
+    const resultFilePath = join("/tmp", resultFileName);
+
+    // Delete stale result file before dispatching
+    try { unlinkSync(resultFilePath); } catch { /* ignore if not exists */ }
+
     const bridgeEnv: Record<string, string | undefined> = { ...process.env };
     if (resolvedModel) {
       bridgeEnv.SWARM_RESOLVED_MODEL = resolvedModel;
@@ -2163,6 +2793,9 @@ CRITICAL RULES:
       bridgeEnv.LLM_MODEL = resolvedModel;
       bridgeEnv.GEMINI_MODEL = resolvedModel;
     }
+    // Spec 2: Pass result path and task ID to bridge
+    bridgeEnv.RESULT_PATH = resultFilePath;
+    bridgeEnv.SWARM_TASK_ID = taskId || "unknown";
 
     const proc = Bun.spawn(["bash", executor.bridge, prompt], {
       stdout: "pipe",
@@ -2177,8 +2810,31 @@ CRITICAL RULES:
       proc.exited,
     ]);
 
+    // Spec 2: Try to read structured result.json first, fall back to stdout
+    let structuredResult: any = null;
+    try {
+      if (existsSync(resultFilePath)) {
+        const resultContent = readFileSync(resultFilePath, "utf-8");
+        structuredResult = JSON.parse(resultContent);
+        this.logger.log("structured_result_read", {
+          executor: executor.id,
+          taskId,
+          status: structuredResult.status,
+          durationMs: structuredResult.metrics?.durationMs,
+        });
+      }
+    } catch (e) {
+      this.logger.log("structured_result_parse_error", { executor: executor.id, taskId, error: String(e) });
+    } finally {
+      // Clean up result file
+      try { unlinkSync(resultFilePath); } catch { /* ignore */ }
+    }
+
     if (exitCode !== 0) {
-      throw new Error(`Local executor ${executor.id} exited with code ${exitCode}: ${stderr.slice(0, 500)}`);
+      // Enrich error with structured result if available
+      const errorMsg = structuredResult?.error?.message || stderr.slice(0, 500);
+      const errorCategory = structuredResult?.error?.category || "unknown";
+      throw new Error(`Local executor ${executor.id} exited with code ${exitCode} [${errorCategory}]: ${errorMsg}`);
     }
 
     this.logger.log("local_executor_complete", { executor: executor.id, outputLength: output.length });
@@ -2263,43 +2919,129 @@ CRITICAL RULES:
   // CIRCUIT BREAKER
   // --------------------------------------------------------------------------
 
+  // v5.0: Three-state circuit breaker with HALF_OPEN probing
   private isCircuitOpen(persona: string): boolean {
     const cb = this.circuitBreakers.get(persona);
     if (!cb) return false;
 
-    if (cb.isOpen) {
-      // O6: Reduce reset window from 60s to 30s for faster recovery
-      if (Date.now() - cb.lastFailure > 30000) {
-        cb.isOpen = false;
-        cb.failures = 0;
-        console.log(`  🟢 Circuit breaker reset for ${persona}`);
-        return false;
+    if (cb.state === "OPEN") {
+      // Check if cooldown has expired → transition to HALF_OPEN
+      if (Date.now() - cb.lastFailure > cb.cooldownMs) {
+        cb.state = "HALF_OPEN";
+        cb.probeInFlight = false;
+        console.log(`  🟡 Circuit breaker HALF_OPEN for ${persona} (cooldown ${cb.cooldownMs}ms expired)`);
+        this.logger.log("circuit_breaker_half_open", { executor: persona, cooldownMs: cb.cooldownMs });
+        return false;  // Allow routing (as probe candidate)
       }
-      return true;
+      return true;  // Still in cooldown
     }
+
+    // HALF_OPEN: allow traffic (probe), CLOSED: allow traffic
     return false;
   }
 
-  private recordSuccess(persona: string): void {
-    this.circuitBreakers.set(persona, {
-      failures: 0,
-      lastFailure: 0,
-      isOpen: false,
-    });
+  // v5.0: Get circuit breaker for an executor, creating default if needed
+  private getOrCreateCB(persona: string): CircuitBreakerV2 {
+    let cb = this.circuitBreakers.get(persona);
+    if (!cb) {
+      cb = createDefaultCircuitBreaker();
+      this.circuitBreakers.set(persona, cb);
+    }
+    return cb;
   }
 
-  private recordFailure(persona: string): void {
-    const cb = this.circuitBreakers.get(persona) || { failures: 0, lastFailure: 0, isOpen: false };
+  private recordSuccess(persona: string): void {
+    const cb = this.getOrCreateCB(persona);
+    const wasHalfOpen = cb.state === "HALF_OPEN";
+
+    if (wasHalfOpen) {
+      // HALF_OPEN → CLOSED: probe succeeded
+      cb.state = "CLOSED";
+      cb.failures = 0;
+      cb.cooldownMs = cb.baseCooldownMs;
+      cb.probeInFlight = false;
+      console.log(`  🟢 Circuit breaker CLOSED for ${persona} (probe succeeded)`);
+      this.logger.log("circuit_breaker_closed", { executor: persona, reason: "probe_success" });
+    } else {
+      // CLOSED: reset consecutive failures on success
+      cb.failures = 0;
+      cb.probeInFlight = false;
+    }
+
+    cb.lastSuccess = Date.now();
+    this.circuitBreakers.set(persona, cb);
+    this.persistCircuitBreakerState();
+  }
+
+  private recordFailure(persona: string, errorCategory?: ErrorCategory): void {
+    const cb = this.getOrCreateCB(persona);
+    const category = errorCategory || "unknown";
+
     cb.failures++;
+    cb.totalFailures++;
     cb.lastFailure = Date.now();
 
-    // O6: Increase threshold from 2 to 3 failures to avoid false positives
-    if (cb.failures >= 3) {
-      cb.isOpen = true;
-      console.log(`  🔴 Circuit breaker opened for ${persona} (${cb.failures} failures)`);
+    // Track failure by category
+    cb.failureCategories.set(category, (cb.failureCategories.get(category) || 0) + 1);
+
+    if (cb.state === "HALF_OPEN") {
+      // HALF_OPEN → OPEN: probe failed, increase cooldown with exponential backoff
+      cb.state = "OPEN";
+      cb.cooldownMs = Math.min(cb.cooldownMs * cb.backoffMultiplier, cb.maxCooldownMs);
+      cb.probeInFlight = false;
+      console.log(`  🔴 Circuit breaker OPEN for ${persona} (probe failed, cooldown=${cb.cooldownMs}ms)`);
+      this.logger.log("circuit_breaker_open", { executor: persona, reason: "probe_failed", cooldownMs: cb.cooldownMs, category });
+    } else if (cb.state === "CLOSED") {
+      // CLOSED → OPEN: check category-aware threshold
+      const threshold = CB_FAILURE_THRESHOLDS[category] ?? 3;
+      const baseCooldown = CB_BASE_COOLDOWN_MS[category] ?? 30_000;
+
+      if (cb.failures >= threshold) {
+        cb.state = "OPEN";
+        cb.baseCooldownMs = baseCooldown;
+        cb.cooldownMs = baseCooldown;
+        console.log(`  🔴 Circuit breaker OPEN for ${persona} (${cb.failures} ${category} failures >= ${threshold}, cooldown=${baseCooldown}ms)`);
+        this.logger.log("circuit_breaker_open", { executor: persona, reason: "threshold", failures: cb.failures, threshold, category, cooldownMs: baseCooldown });
+      }
     }
 
     this.circuitBreakers.set(persona, cb);
+    this.persistCircuitBreakerState();
+  }
+
+  // v5.0: Update backpressure after task completion
+  private updateBackpressureForExecutor(executorId: string, durationMs: number): void {
+    let bp = this.backpressureStates.get(executorId);
+    if (!bp) {
+      bp = createDefaultBackpressure(executorId);
+      this.backpressureStates.set(executorId, bp);
+    }
+    updateBackpressure(bp, durationMs);
+  }
+
+  // v5.0: Persist circuit breaker state to executor-history.json
+  private persistCircuitBreakerState(): void {
+    try {
+      const dir = join(process.env.HOME || "/tmp", ".swarm");
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      const cbPath = join(dir, "circuit-breakers.json");
+      const serialized = serializeCircuitBreakers(this.circuitBreakers, this.backpressureStates);
+      writeFileSync(cbPath, JSON.stringify(serialized, null, 2));
+    } catch {}
+  }
+
+  // v5.0: Load persisted circuit breaker state
+  private loadCircuitBreakerState(): void {
+    try {
+      const cbPath = join(process.env.HOME || "/tmp", ".swarm", "circuit-breakers.json");
+      if (existsSync(cbPath)) {
+        const raw = JSON.parse(readFileSync(cbPath, "utf-8"));
+        const { breakers, backpressure } = deserializeCircuitBreakers(raw);
+        this.circuitBreakers = breakers;
+        this.backpressureStates = backpressure;
+        console.log(`  📂 Loaded ${breakers.size} circuit breaker states from disk`);
+      }
+    } catch {}
   }
 
   // --------------------------------------------------------------------------
@@ -2309,12 +3051,25 @@ CRITICAL RULES:
   private healthScore(persona: string): number {
     const cb = this.circuitBreakers.get(persona);
     if (!cb) return 1.0;
-    if (cb.isOpen) return 0.0;
-    const failurePenalty = cb.failures * 0.3;
-    const recencyBonus = cb.lastFailure > 0
-      ? Math.min(0.2, (Date.now() - cb.lastFailure) / 60000 * 0.2)
+
+    // v5.0: Circuit breaker state gates
+    if (cb.state === "OPEN") return 0.0;
+    if (cb.state === "HALF_OPEN") return 0.1;  // low but non-zero (probe candidate)
+
+    // Base score from consecutive failures
+    let score = 1.0 - (cb.failures * 0.3);
+
+    // v5.0: Backpressure penalty (max 50% reduction from pressure)
+    const bp = this.backpressureStates.get(persona);
+    if (bp) score *= (1.0 - bp.pressureScore * 0.5);
+
+    // Recency bonus (time since last failure)
+    const recency = cb.lastFailure > 0
+      ? Math.min(0.2, (Date.now() - cb.lastFailure) / 60_000 * 0.05)
       : 0;
-    return Math.max(0, Math.min(1.0, 1.0 - failurePenalty + recencyBonus));
+    score += recency;
+
+    return Math.max(0, Math.min(1.0, score));
   }
 
   private static SEMANTIC_SYNONYMS: Record<string, string[]> = {
@@ -2443,6 +3198,26 @@ CRITICAL RULES:
     const complexity = estimateComplexity(task);
     const category = task.memoryMetadata?.category || "general";
 
+    // v5.0: HALF_OPEN probe routing — prefer trivial tasks for probing degraded executors
+    for (const [id, cb] of this.circuitBreakers) {
+      if (excludeExecutors?.has(id)) continue;
+      if (cb.state === "HALF_OPEN" && !cb.probeInFlight) {
+        const cap = this.executorCapabilities.get(id);
+        if (cap && (complexity.tier === "trivial" || this.executorCapabilities.size <= 1)) {
+          cb.probeInFlight = true;
+          console.log(`  🔬 [${task.id}] Routing as HALF_OPEN probe to ${id} (complexity=${complexity.tier})`);
+          this.logger.log("half_open_probe", { taskId: task.id, executor: id, complexity: complexity.tier });
+          return {
+            executorId: id,
+            executorName: cap.name,
+            compositeScore: 0.1,
+            breakdown: { capability: 0, health: 0.1, complexityFit: 0, history: 0 },
+            method: "composite",
+          };
+        }
+      }
+    }
+
     const candidates: RouteDecision[] = [];
 
     for (const [id, cap] of this.executorCapabilities) {
@@ -2457,12 +3232,40 @@ CRITICAL RULES:
       const procScore = getProcedureSuccessRate(id, category);
       const tempScore = getRecentSuccessRate(id, 7);
 
+      // v4.10: Cognitive profile signals (affinity + failure penalty)
+      const history = loadHistory();
+      const affinities: number[] = [];
+      const failurePenalties: number[] = [];
+      for (const [hKey, hEntry] of Object.entries(history)) {
+        if (!hKey.startsWith(id + ":")) continue;
+        if ((hEntry as any).entity_affinities) {
+          const aff = (hEntry as any).entity_affinities as Record<string, number>;
+          const taskEntities = [category, ...(task.memoryMetadata?.tags || [])];
+          for (const te of taskEntities) {
+            if (aff[te] !== undefined) affinities.push(aff[te]);
+          }
+        }
+        if ((hEntry as any).failure_patterns) {
+          const fp = (hEntry as any).failure_patterns as string[];
+          const errorContext = task.memoryMetadata?.previousAttemptContext?.error_type || "";
+          for (const pattern of fp) {
+            if (errorContext && errorContext === pattern) failurePenalties.push(0.15);
+          }
+        }
+      }
+      const affinityScore = affinities.length > 0
+        ? affinities.reduce((a, b) => a + b, 0) / affinities.length
+        : 0.5;
+      const failurePenalty = Math.max(0, Math.min(1, 1.0 - failurePenalties.reduce((a, b) => a + b, 0)));
+
       const composite = (w.capability * capScore.normalized)
                       + (w.health * hlth)
                       + (w.complexityFit * cfit)
                       + (w.history * hist)
-                      + (0.10 * (procScore - 0.5))   // Procedure bonus/penalty (±0.05)
-                      + (0.05 * (tempScore - 0.5));   // Temporal bonus/penalty (±0.025)
+                      + (0.10 * (procScore - 0.5))   // Procedure bonus/penalty
+                      + (0.05 * (tempScore - 0.5))    // Temporal bonus/penalty
+                      + (0.08 * (affinityScore - 0.5))  // Affinity bonus/penalty
+                      + (0.07 * (failurePenalty - 0.5)); // Failure penalty
 
       candidates.push({
         executorId: id,
@@ -2475,6 +3278,8 @@ CRITICAL RULES:
           history: hist,
           procedure: procScore,
           temporal: tempScore,
+          affinity: affinityScore,
+          failurePenalty,
         },
         method: "composite",
       });
@@ -2490,7 +3295,9 @@ CRITICAL RULES:
         `(cap=${b.capability.toFixed(2)} hlth=${b.health.toFixed(2)} ` +
         `cplx=${b.complexityFit.toFixed(2)} hist=${b.history.toFixed(2)}` +
         `${b.procedure !== undefined ? ` proc=${b.procedure.toFixed(2)}` : ""}` +
-        `${b.temporal !== undefined ? ` temp=${b.temporal.toFixed(2)}` : ""})`);
+        `${b.temporal !== undefined ? ` temp=${b.temporal.toFixed(2)}` : ""}` +
+        `${b.affinity !== undefined ? ` afn=${b.affinity.toFixed(2)}` : ""}` +
+        `${b.failurePenalty !== undefined ? ` fpen=${b.failurePenalty.toFixed(2)}` : ""})`);
     }
     this.logger.log("composite_route", {
       taskId: task.id,
