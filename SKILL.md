@@ -17,19 +17,63 @@ A reusable skill that enables **any persona** to spawn parallel agent teams, del
 ## ⚡ Quick Start
 
 ```bash
-cd Skills/zo-swarm-orchestrator/scripts
+# Run a campaign from a JSON file
+bun scripts/orchestrate-v4.ts --tasks campaign.json --name my-campaign
 
-# Run with hierarchical memory
-bun orchestrate-v4.ts examples/test-v4-simple.json --swarm-id my-project
+# Run with local concurrency limit
+bun scripts/orchestrate-v4.ts --tasks campaign.json --local-concurrency 4
+```
 
-# Cost-optimized: no memory
-bun orchestrate-v4.ts tasks.json --strategy none
+---
 
-# Bounded context: sliding window
-bun orchestrate-v4.ts tasks.json --strategy sliding --max-tokens 8000
+## MCP Server
 
-# Health check
-bun orchestrate-v4.ts doctor
+The swarm orchestrator can be accessed via MCP (Model Context Protocol) for integration with AI assistants.
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `swarm_execute` | Execute a swarm campaign with multiple parallel tasks |
+| `swarm_status` | Check status of a running or completed swarm |
+| `swarm_results` | Retrieve detailed results from a completed swarm |
+| `swarm_benchmark` | Run a benchmark comparing memory strategies |
+| `swarm_list` | List recent swarm campaign runs |
+
+### Usage
+
+**Stdio transport** (for Claude Desktop, Cursor):
+```bash
+bun /home/workspace/Skills/zo-swarm-orchestrator/scripts/mcp-server.ts
+```
+
+**HTTP transport** (for network access):
+```bash
+# Start the server
+bun /home/workspace/Skills/zo-swarm-orchestrator/scripts/mcp-server-http.ts
+
+# Or run as a Zo service (recommended)
+# Service URL: https://zo-swarm-mcp-marlandoj.zocomputer.io
+```
+
+### Example: swarm_execute
+
+```json
+{
+  "tasks": [
+    {
+      "task": "Analyze the performance of the database query",
+      "priority": "high",
+      "timeoutSeconds": 300
+    },
+    {
+      "task": "Review the API endpoint for security issues",
+      "priority": "medium"
+    }
+  ],
+  "campaignName": "security-audit",
+  "waitForCompletion": true
+}
 ```
 
 ---
@@ -398,7 +442,7 @@ Create `config.json` in the skill root:
 | `SWARM_IDENTITY_DIR` | Persona identity files directory | `$SWARM_WORKSPACE/IDENTITY` |
 | `SWARM_SOUL_FILE` | Path to constitution file | `$SWARM_WORKSPACE/SOUL.md` |
 | `SWARM_PERSONA_MEMORY_DIR` | Persona-specific memory files | `$SWARM_WORKSPACE/.zo/memory/personas` |
-| `SWARM_MEMORY_SCRIPT` | Memory search script path | `$SWARM_WORKSPACE/.zo/memory/scripts/memory.ts` |
+| `SWARM_MEMORY_SCRIPT` | Memory search script path | `$SWARM_WORKSPACE/Skills/zo-memory-system/scripts/memory.ts` |
 | `SWARM_EXECUTOR_REGISTRY` | Local executor registry JSON path | `Skills/zo-swarm-executors/registry/executor-registry.json` |
 
 ---
