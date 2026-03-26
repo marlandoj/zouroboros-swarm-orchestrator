@@ -128,7 +128,7 @@ export const TIER_CANDIDATES: Record<ComplexityTier, string[]> = {
   trivial: ["swarm-light"],
   simple: ["swarm-light", "swarm-mid"],
   moderate: ["swarm-light", "swarm-mid", "swarm-heavy"],
-  complex: ["swarm-light", "swarm-mid", "swarm-heavy"],
+  complex: ["swarm-light", "swarm-mid", "swarm-heavy", "failover"], // ↑ failover restored — avoids downtime if one combo is degraded
 };
 
 // Maps executor IDs to their valid model identifiers for each tier
@@ -136,7 +136,7 @@ export const TIER_CANDIDATES: Record<ComplexityTier, string[]> = {
 export const EXECUTOR_MODEL_MAP: Record<string, Record<ComplexityTier, string>> = {
   "claude-code": {
     trivial: "haiku",
-    simple: "haiku",
+    simple: "sonnet",   // ↑ was haiku — simple tasks need more reasoning than haiku provides
     moderate: "sonnet",
     complex: "opus",
   },
