@@ -41,7 +41,7 @@ DEFAULTS = {
 }
 
 def nlog(path, event, **kw):
-    entry = json.dumps({"ts": str(__import__("datetime").datetime.utcnow().isoformat()), "event": event, **kw})
+    entry = json.dumps({"ts": str(__import__("datetime").datetime.now(__import__("datetime").UTC).isoformat().replace("+00:00","Z")), "event": event, **kw})
     with open(path, "a") as fh: fh.write(entry + "\n")
 
 def init_history():
@@ -145,10 +145,48 @@ def topo(tasks):
 def deps_ok(task, ok, fail):
     return all(ok.get(d) or fail.get(d) for d in task.get("dependsOn", []))
 
+
+def get_memory_context(task, limit_tokens=2000):
+    """Query zo-memory-system for relevant context, inject as summary."""
+    if not MEMORY_DB.exists():
+        return ""
+    try:
+        conn = sqlite3.connect(str(MEMORY_DB), timeout=5)
+        # Search facts table for relevant entities
+        query = (task.get("task", "") + " " +
+                 task.get("memoryMetadata", {}).get("category", "") + " " +
+                 " ".join(task.get("memoryMetadata", {}).get("tags", []))).lower()
+        keywords = [w for w in query.split() if len(w) > 3][:10]
+        if not keywords:
+            return ""
+        # Simple relevance: facts with entity or key matching keywords
+        placeholders = ",".join("?" * len(keywords))
+        rows = conn.execute(
+            "SELECT entity, key, value FROM facts WHERE value != '' AND "
+            "(expires_at IS NULL OR expires_at > ?) AND "
+            "(entity IN (" + placeholders + ") OR key IN (" + placeholders + ")) "
+            "ORDER BY created_at DESC LIMIT 5",
+            [int(time.time())] + keywords + keywords
+        ).fetchall()
+        conn.close()
+        if not rows:
+            return ""
+        lines = ["## Relevant Memory:"]
+        for entity, key, value in rows:
+            lines.append("- [[" + entity + "]]." + key + ": " + value[:100])
+        ctx = "\n".join(lines)
+        # Rough token estimate: ~4 chars/token
+        if len(ctx) > limit_tokens * 4:
+            ctx = ctx[:limit_tokens * 4]
+        return "\n" + ctx
+    except Exception as e:
+        return ""
+
 def build_prompt(task, completed, ctx_window):
     p = task.get("task", "")
     cat = (task.get("memoryMetadata", {}).get("category", "") or "")
     if cat: p = p + "\n\n[Category: " + cat + "]"
+    p = p + get_memory_context(task)
     if completed:
         win = completed[-ctx_window:]
         lines = []
@@ -272,7 +310,7 @@ class Orch:
 
     def write_progress(self, status):
         d = {
-            "ts": str(__import__("datetime").datetime.utcnow().isoformat()),
+            "ts": str(__import__("datetime").datetime.now(__import__("datetime").UTC).isoformat().replace("+00:00","Z")),
             "swarmId": self.swarm_id,
             "totalTasks": len(self.tasks),
             "completed": len(self.ok),
