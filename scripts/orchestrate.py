@@ -163,15 +163,21 @@ def build_prompt(task, completed, ctx_window):
     return p
 
 def call_agent(exid, prompt, timeout_s, bridge_path):
-    # Use PIPE for stdout to avoid deadlock.
-    # The bridge outputs result to stdout AND writes a result file.
-    # We read from PIPE (non-blocking stdout read after proc finishes).
     rf = "/tmp/swarm-result-" + str(os.getpid()) + "-" + str(int(time.time()*1000)) + ".txt"
+    # Bridges have different arg signatures:
+    # claude-code: only prompt (generates workdir internally)
+    # codex/hermes/gemini: prompt + workdir
+    args = [str(bridge_path)]
+    if exid in ("claude-code",):
+        args.append(prompt)
+    else:
+        args.extend([prompt, WORKSPACE])
     try:
+        env = {**os.environ, "WORKSPACE": WORKSPACE}
         proc = subprocess.Popen(
-            ["bash", str(bridge_path), prompt, rf],
+            args,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, cwd=WORKSPACE)
+            text=True, cwd=WORKSPACE, env=env)
         try:
             stdout, stderr = proc.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired:
