@@ -67,35 +67,35 @@ async function runPreflightChecks(campaignFile: string): Promise<PreflightResult
     errors.push(`Campaign file is not valid JSON: ${e}`);
   }
 
-  // 2a. Prefer Python orchestrator (v5.0 - fully functional)
-  const pythonScript = join(import.meta.dir, "orchestrate.py");
-  if (existsSync(pythonScript)) {
-    // Python orchestrator is primary - test it with doctor
-    const doctorResult = Bun.spawnSync({
-      cmd: ["python3", pythonScript, "doctor"],
-      timeout: 10_000,
-    });
-    if (doctorResult.exitCode !== 0) {
-      warnings.push("Python orchestrator doctor check failed — may have issues");
-    }
-  }
-
-  // 2b. Bun orchestrator (backup only — may be corrupted)
-  const orchestratorScript = join(import.meta.dir, "orchestrate-v5.ts");
-  if (existsSync(orchestratorScript)) {
-    // Syntax check for Bun TS orchestrator
+  // 2a. PRIMARY: Bun TS orchestrator (v5.0 - full feature parity with v4)
+  const tsScript = join(import.meta.dir, "orchestrate-v5.ts");
+  if (existsSync(tsScript)) {
     const tscResult = Bun.spawnSync({
-      cmd: ["bun", "--bun", "tsc", "--noEmit", orchestratorScript],
+      cmd: ["bun", "--bun", "tsc", "--noEmit", tsScript],
       timeout: 15_000,
     });
     if (tscResult.exitCode !== 0) {
       const stderr = new TextDecoder().decode(tscResult.stderr);
       const match = stderr.match(/error:.*at (.*?):(\d+)/);
       const loc = match ? `${match[1]}:${match[2]}` : "(see stderr)";
-      warnings.push(`Bun orchestrator has syntax errors at ${loc} — Python orchestrator will be used instead`);
+      warnings.push(`Bun TS orchestrator has syntax errors at ${loc} — will fallback to Python`);
     }
   } else {
-    warnings.push("Bun orchestrator (orchestrate-v5.ts) not found — Python orchestrator will be used");
+    warnings.push("Bun TS orchestrator not found — will use Python fallback");
+  }
+
+  // 2b. FALLBACK: Python orchestrator (lightweight, reliable)
+  const pythonScript = join(import.meta.dir, "orchestrate.py");
+  if (existsSync(pythonScript)) {
+    const doctorResult = Bun.spawnSync({
+      cmd: ["python3", pythonScript, "doctor"],
+      timeout: 10_000,
+    });
+    if (doctorResult.exitCode !== 0) {
+      warnings.push("Python orchestrator doctor check failed");
+    }
+  } else {
+    warnings.push("Python fallback not available");
   }
 
   // 3. Validate executor registry (sibling skill at Skills/zo-swarm-executors)
@@ -103,9 +103,7 @@ async function runPreflightChecks(campaignFile: string): Promise<PreflightResult
   if (!existsSync(registryPath)) {
     // Try alternative: relative to orchestrator script
     const altRegistry = join(import.meta.dir, "..", "..", "zo-swarm-executors", "registry", "executor-registry.json");
-    if (existsSync(altRegistry)) {
-      // OK - found
-    } else {
+    if (!existsSync(altRegistry)) {
       warnings.push(`Executor registry not found — some executors may not be discoverable`);
     }
   }

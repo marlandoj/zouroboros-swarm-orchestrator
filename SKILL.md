@@ -17,18 +17,21 @@ A reusable skill that enables **any persona** to spawn parallel agent teams, del
 ## ⚡ Quick Start
 
 ```bash
-# Short campaigns — Python (fastest, 551 clean lines)
+# PRIMARY: Bun TS orchestrator (full features - 6-signal routing, stagnation detection, OmniRoute, etc.)
+bun Skills/zo-swarm-orchestrator/scripts/orchestrate-v5.ts tasks.json
+
+# FALLBACK: Python orchestrator (lightweight, reliable, basic features)
 python3 Skills/zo-swarm-orchestrator/scripts/orchestrate.py tasks.json
 
 # Long campaigns (>5 tasks) — hybrid runner (progress streaming + handoff)
 bun Skills/zo-swarm-orchestrator/scripts/swarm-hybrid-runner.ts tasks.json --notify sms
 
 # Cascade mode: use --no-cascade to skip downstream tasks when a root fails
-python3 Skills/zo-swarm-orchestrator/scripts/orchestrate.py tasks.json --no-cascade
+bun Skills/zo-swarm-orchestrator/scripts/orchestrate-v5.ts tasks.json --no-cascade
 
 # Status + health checks
-python3 Skills/zo-swarm-orchestrator/scripts/orchestrate.py status <swarm-id>
-python3 Skills/zo-swarm-orchestrator/scripts/orchestrate.py doctor
+bun Skills/zo-swarm-orchestrator/scripts/orchestrate-v5.ts status <swarm-id>
+bun Skills/zo-swarm-orchestrator/scripts/orchestrate-v5.ts doctor
 ```
 
 ---
