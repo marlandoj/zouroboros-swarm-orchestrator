@@ -35,6 +35,7 @@ DEFAULTS = {
     "maxRetries": 3,
     "enableMemory": True,
     "defaultMemoryStrategy": "hierarchical",
+    "cascadeMode": True,  # cascade-off skips downstream when root fails
     "maxContextTokens": 16000,
     "crossTaskContextWindow": 3,
     "routingStrategy": "balanced",
@@ -142,8 +143,45 @@ def topo(tasks):
     remaining = [t["id"] for t in tasks if t["id"] not in result]
     return result + remaining
 
-def deps_ok(task, ok, fail):
-    return all(ok.get(d) or fail.get(d) for d in task.get("dependsOn", []))
+# P3: DAG Cascade Mitigation
+# cascadeMode=True (default): task runs if all deps succeeded or failed
+# cascadeMode=False: task runs ONLY if ALL deps succeeded (rescue failed-root subtrees)
+def deps_ok(task, ok, fail, cascade_mode=True, failed_roots=None, skipped=None):
+    deps = task.get("dependsOn", [])
+    if not deps:
+        return True  # Root tasks always run
+    if cascade_mode:
+        return all(ok.get(d) or fail.get(d) for d in deps)
+    # cascade_mode=False: rescue subtree if root dep failed
+    # Walk transitive closure — skip if ANY ancestor is a failed root
+    fr = failed_roots or {}
+    visited = set()
+    def has_failed_root_ancestor(dep_id):
+        if dep_id in visited:
+            return False
+        visited.add(dep_id)
+        if fr.get(dep_id):
+            return True  # This dep is a failed root
+        # Recurse: check ancestors of this dep
+        dep_task = next((t for t in _all_tasks if t["id"] == dep_id), None)
+        if not dep_task:
+            return False
+        for ancestor in dep_task.get("dependsOn", []):
+            if has_failed_root_ancestor(ancestor):
+                return True
+        return False
+    for d in deps:
+        if fail.get(d):
+            if has_failed_root_ancestor(d):
+                return False  # This task has a failed-root ancestor -> skip
+    return all(ok.get(d) or fail.get(d) for d in deps)
+
+# Global for transitive check (set by Orch.load_tasks)
+_all_tasks = []  # P3: for transitive cascade analysis
+
+def is_root_task(task):
+    """A root task is one with no dependencies."""
+    return len(task.get("dependsOn", [])) == 0
 
 
 def get_memory_context(task, limit_tokens=2000):
@@ -298,6 +336,8 @@ class Orch:
         self.lock_path = LOCK_DIR / (swarm_id + ".lock")
         self.completed_outputs = []
         self.circuit_breakers = {}
+        self.failed_root_tasks = {}  # P3: root tasks that failed (no deps on failed tasks)
+        self.skipped_due_to_cascade = {}  # P3: tasks skipped because their root dep failed
         nlog(str(self.log_path), "swarm_start", swarm_id=swarm_id)
         init_history()
         self.executors = load_executors()
@@ -323,6 +363,7 @@ class Orch:
 
     def load_tasks(self, path):
         self.tasks = json.loads(Path(path).read_text())
+        global _all_tasks; _all_tasks = self.tasks  # P3: for transitive cascade check
         self.init()
         print("Tasks: " + str(len(self.tasks)))
 
@@ -337,9 +378,21 @@ class Orch:
             with self.lock:
                 while len(running) < self.cfg["localConcurrency"] and pending:
                     for tid in list(pending):
-                        if deps_ok(task_map[tid], self.ok, self.fail):
+                        # P3: cascade mode check
+                        cascade_ok = deps_ok(task_map[tid], self.ok, self.fail,
+                                           self.cfg.get("cascadeMode", True),
+                                           self.failed_root_tasks,
+                                           self.skipped_due_to_cascade)
+                        if cascade_ok:
                             pending.remove(tid)
                             running.add(tid)
+                            # P3: cascade-off = mark downstream of failed roots as skipped
+                            if not self.cfg.get("cascadeMode", True):
+                                for d in task_map[tid].get("dependsOn", []):
+                                    if self.fail.get(d) and self.failed_root_tasks.get(d):
+                                        self.skipped_due_to_cascade[tid] = d
+                                        break
+                            print(f"  >> dispatching [{tid}] -> running={len(running)}")
                             t = threading.Thread(target=self.exec_task, args=(task_map[tid], running,))
                             t.start()
             time.sleep(0.5)
@@ -398,6 +451,9 @@ class Orch:
                     print("  RETRY [" + tid + "] in " + str(round(wait, 1)) + "s...")
                     time.sleep(wait)
         with self.lock:
+            # P3: mark root failures so downstream tasks can skip
+            if is_root_task(task):
+                self.failed_root_tasks[tid] = True
             self.fail[tid] = {"taskId": tid, "success": False, "error": str(err)[:500], "durationMs": dur, "retries": retries-1}
             running_set.discard(tid)
         self.write_progress("running")
@@ -405,9 +461,16 @@ class Orch:
     def save_results(self):
         ems = int((time.time() - self.start_time) * 1000)
         sok = len(self.ok); sfail = len(self.fail)
+        # P3: count skipped tasks (downstream of failed roots, not run)
+        sskipped = len(self.skipped_due_to_cascade)
+        skipped_detail = {k: v for k, v in self.skipped_due_to_cascade.items()}
+        cascade_rescued = sskipped  # tasks that would have failed under cascade-on
         results = {
             "swarmId": self.swarm_id,
             "status": "complete",
+            "cascadeMode": self.cfg.get("cascadeMode", True),
+            "cascadeRescued": cascade_rescued,  # P3: tasks skipped (rescued from cascade)
+            "skippedDetail": skipped_detail,
             "completed": sok,
             "failed": sfail,
             "total": len(self.tasks),
@@ -421,7 +484,13 @@ class Orch:
         sok = len(self.ok); sfail = len(self.fail)
         nlog(str(self.log_path), "swarm_complete", succeeded=sok, failed=sfail, elapsed_ms=ems)
         write_episode(self.swarm_id, sok, sfail, ems, len(self.tasks), list(self.executors.keys()))
-        print("Swarm " + self.swarm_id + ": " + str(sok) + "/" + str(len(self.tasks)) + " OK in " + str(round(ems/1000)) + "s")
+        sk = len(self.skipped_due_to_cascade)
+        cascade_msg = ""
+        if not self.cfg.get("cascadeMode", True) and sk > 0:
+            cascade_msg = " (" + str(sk) + " skipped due to root failure)"
+        elif sk > 0:
+            cascade_msg = " (cascade rescue: " + str(sk) + " skipped)"
+        print("Swarm " + self.swarm_id + ": " + str(sok) + "/" + str(len(self.tasks)) + " OK in " + str(round(ems/1000)) + "s" + cascade_msg)
         self.write_progress("complete")
         try: self.lock_path.unlink()
         except: pass
@@ -443,6 +512,7 @@ def main():
         print("  --concurrency N   : Max parallel tasks (default: 8)")
         print("  --timeout S       : Per-task timeout in seconds (default: 600)")
         print("  --strategy STRAT  : balanced|fast|reliable|explore (default: balanced)")
+        print("  --no-cascade       : Skip downstream tasks when root fails (default: cascade-on)")
         print("  --notify sms|email: Send notification on completion")
         print("  status <ID>       : Check swarm status")
         print("  doctor             : Run health checks")
@@ -454,7 +524,7 @@ def main():
         doctor_cmd(); sys.exit(0)
     campaign = args[0]
     swarm_id = "swarm_" + str(int(time.time()))
-    cfg = dict(localConcurrency=8, timeoutSeconds=600, maxRetries=3, routingStrategy="balanced")
+    cfg = dict(localConcurrency=8, timeoutSeconds=600, maxRetries=3, routingStrategy="balanced", cascadeMode=True)
     i = 1
     while i < len(args):
         a = args[i]
@@ -463,6 +533,7 @@ def main():
         elif a == "--timeout" and i+1 < len(args): cfg["timeoutSeconds"] = int(args[i+1]); i += 2
         elif a == "--max-retries" and i+1 < len(args): cfg["maxRetries"] = int(args[i+1]); i += 2
         elif a == "--strategy" and i+1 < len(args): cfg["routingStrategy"] = args[i+1]; i += 2
+        elif a == "--no-cascade": cfg["cascadeMode"] = False; i += 1  # P3
         elif a == "--notify" and i+1 < len(args): os.environ["NOTIFY"] = args[i+1]; i += 2
         else: i += 1
     if not Path(campaign).exists():
