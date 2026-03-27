@@ -113,7 +113,7 @@ bun scripts/swarm-hybrid-runner.ts campaign.json --notify email
 
 ```bash
 # Check progress on a running or completed swarm
-bun scripts/orchestrate-v4.ts status <swarm-id>
+bun scripts/orchestrate-v5.ts status <swarm-id>
 
 # Example output:
 # 🔍 Swarm Status: swarm_1710284123456
@@ -141,12 +141,12 @@ For running swarms completely in the background from the start:
 
 ```bash
 # Start in background with notification
-nohup bun scripts/orchestrate-v4.ts campaign.json \
+nohup bun scripts/orchestrate-v5.ts campaign.json \
   --notify sms \
   > /tmp/swarm.log 2>&1 &
 
 # Check status
-bun scripts/orchestrate-v4.ts status <swarm-id>
+bun scripts/orchestrate-v5.ts status <swarm-id>
 
 # View live logs
 tail -f /tmp/swarm.log
@@ -261,7 +261,7 @@ The routing improves with use — after a few runs, tasks flow to whichever exec
 | `explore` | Favor executors with proven track records |
 
 ```bash
-bun orchestrate-v4.ts tasks.json --routing-strategy reliable
+bun orchestrate-v5.ts tasks.json --routing-strategy reliable
 ```
 
 ---
@@ -359,7 +359,7 @@ sequential     386           5         0%
 
 | File | Purpose |
 |------|---------|
-| `orchestrate-v4.ts` | Main orchestrator (v4.5 with 6-signal routing) |
+| `orchestrate-v5.ts` | Main orchestrator (v4.5 with 6-signal routing) |
 | `token-optimizer.ts` | Token cleaning + hierarchical memory |
 | `swarm-memory.ts` | SQLite persistence + inter-agent messaging |
 | `swarm-config.ts` | Configuration management CLI |

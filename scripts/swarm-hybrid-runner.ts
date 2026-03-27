@@ -81,7 +81,7 @@ async function runPreflightChecks(campaignFile: string): Promise<PreflightResult
   }
 
   // 2b. Bun orchestrator (backup only — may be corrupted)
-  const orchestratorScript = join(import.meta.dir, "orchestrate-v4.ts");
+  const orchestratorScript = join(import.meta.dir, "orchestrate-v5.ts");
   if (existsSync(orchestratorScript)) {
     // Syntax check for Bun TS orchestrator
     const tscResult = Bun.spawnSync({
@@ -95,7 +95,7 @@ async function runPreflightChecks(campaignFile: string): Promise<PreflightResult
       warnings.push(`Bun orchestrator has syntax errors at ${loc} — Python orchestrator will be used instead`);
     }
   } else {
-    warnings.push("Bun orchestrator (orchestrate-v4.ts) not found — Python orchestrator will be used");
+    warnings.push("Bun orchestrator (orchestrate-v5.ts) not found — Python orchestrator will be used");
   }
 
   // 3. Validate executor registry (sibling skill at Skills/zo-swarm-executors)
@@ -193,7 +193,7 @@ async function main() {
   }
 
   // Build orchestrator command
-  const orchestratorScript = join(import.meta.dir, "orchestrate-v4.ts");
+  const orchestratorScript = join(import.meta.dir, "orchestrate-v5.ts");
   const cmd = ["bun", orchestratorScript, campaignFile, "--swarm-id", swarmId, ...extraArgs];
 
   // P0-1: Spawn with error handling + Python fallback
