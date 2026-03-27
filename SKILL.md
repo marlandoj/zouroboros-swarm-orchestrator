@@ -3,10 +3,10 @@ name: zo-swarm-orchestrator
 description: Local-only multi-agent orchestrator with token optimization, 6-signal composite routing, and persistent memory. Routes all tasks through local executor bridges (Claude Code, Hermes, Gemini, Codex) with DAG dependencies, auto-episode creation, and cognitive profiles.
 metadata:
   created: 2026-02-08
-  updated: 2026-03-07
-  version: 4.5.0
+  updated: 2026-03-27
+  version: 5.0.0
 ---
-# Swarm Orchestrator Skill v4.5.0
+# Swarm Orchestrator Skill v5.0.0
 
 A reusable skill that enables **any persona** to spawn parallel agent teams, delegate tasks across specialized personas, and synthesize results into coherent output.
 
@@ -17,11 +17,21 @@ A reusable skill that enables **any persona** to spawn parallel agent teams, del
 ## ⚡ Quick Start
 
 ```bash
-# Run a campaign from a JSON file
-bun scripts/orchestrate-v4.ts --tasks campaign.json --name my-campaign
+# v5.0 — Primary (Python orchestrator)
+python3 Skills/zo-swarm-orchestrator/scripts/orchestrate.py campaign.json
 
-# Run with local concurrency limit
-bun scripts/orchestrate-v4.ts --tasks campaign.json --local-concurrency 4
+# bun version (v4.x TS orchestrator — available but syntax-broken)
+bun Skills/zo-swarm-orchestrator/scripts/orchestrate-v4.ts campaign.json
+
+# Hybrid runner for long campaigns (>15 min)
+bun Skills/zo-swarm-orchestrator/scripts/swarm-hybrid-runner.ts campaign.json --notify sms
+```
+
+### Doctor / Health Check
+
+```bash
+# Verify all executors are available
+python3 Skills/zo-swarm-orchestrator/scripts/orchestrate.py doctor
 ```
 
 ---
@@ -169,7 +179,8 @@ tail -f /tmp/swarm.log
 
 | Version | Status | Key Innovation |
 |---------|--------|----------------|
-| **v4.5** | ✅ **Current** | **Memory-Enriched Routing** — local-only execution, 6-signal composite routing (+ procedure + temporal), auto-episodes, cognitive profiles |
+| **v5.0** | ✅ **Current** | **Python orchestrator** (`orchestrate.py`) — primary executor; `orchestrate-v4.ts` legacy until repaired |
+| **v4.10** | ⚠️ Legacy | Phase 4 intelligence — stagnation, auto-unstuck, OmniRoute health — **syntax error, needs regeneration** |
 | v4.3 | ✅ Current | Hivemind Routing — semantic synonym matching, flattened affinity matrix |
 | v4.2 | ✅ Current | Composite router, retry-with-reroute, executor history, routing strategies |
 | v4.1 | ✅ Current | DAG dependencies, NDJSON logging, inter-agent messaging |
