@@ -223,7 +223,7 @@ def get_memory_context(task, limit_tokens=2000):
 def build_prompt(task, completed, ctx_window):
     p = task.get("task", "")
     cat = (task.get("memoryMetadata", {}).get("category", "") or "")
-    if cat: p = p + "\n\n[Category: " + cat + "]"
+    # Category metadata used for routing/hist only - NOT appended to prompt
     p = p + get_memory_context(task)
     if completed:
         win = completed[-ctx_window:]
@@ -375,10 +375,11 @@ class Orch:
         self.write_progress("running")
         print("Starting " + str(len(self.tasks)) + " tasks with concurrency " + str(self.cfg["localConcurrency"]))
         while pending or running:
+            # Try dispatching (brief lock hold)
+            to_dispatch = []
             with self.lock:
                 while len(running) < self.cfg["localConcurrency"] and pending:
                     for tid in list(pending):
-                        # P3: cascade mode check
                         cascade_ok = deps_ok(task_map[tid], self.ok, self.fail,
                                            self.cfg.get("cascadeMode", True),
                                            self.failed_root_tasks,
@@ -386,17 +387,27 @@ class Orch:
                         if cascade_ok:
                             pending.remove(tid)
                             running.add(tid)
-                            # P3: cascade-off = mark downstream of failed roots as skipped
                             if not self.cfg.get("cascadeMode", True):
                                 for d in task_map[tid].get("dependsOn", []):
                                     if self.fail.get(d) and self.failed_root_tasks.get(d):
                                         self.skipped_due_to_cascade[tid] = d
                                         break
-                            print(f"  >> dispatching [{tid}] -> running={len(running)}")
-                            t = threading.Thread(target=self.exec_task, args=(task_map[tid], running,))
-                            t.start()
+                            to_dispatch.append(tid)
+            # Spawn threads OUTSIDE lock - exec_task modifies self.ok/self.fail (which need lock)
+            for tid in to_dispatch:
+                print("  dispatching [" + tid + "] running=" + str(len(running)))
+                t = threading.Thread(target=self.exec_task, args=(task_map[tid], running))
+                t.start()
+            # Lock released - exec_task threads can acquire it
+            if running:
+                self.write_progress("running")
+            if pending and not running:
+                print("  WARN: deadlock detected - " + str(len(pending)) + " pending")
+                break
             time.sleep(0.5)
-        while len(self.ok) + len(self.fail) < len(self.tasks): time.sleep(0.5)
+        while running:
+            time.sleep(1)
+        self.write_progress("complete")
         self.save_results()
         self.shutdown()
 
@@ -421,7 +432,7 @@ class Orch:
             tried.add(exid)
             bp = get_bridge(exid, self.executors)
             if not bp:
-                print("  MISSING [" + tid + "] bridge for " + exid)
+                print("  MISSING [" + tid + "] bridge for " + exid + " (executors: " + str(list(self.executors.keys())) + ")")
                 err = "No bridge for " + exid
                 break
             tout = task.get("timeoutSeconds", self.cfg["timeoutSeconds"])
@@ -440,6 +451,7 @@ class Orch:
                 print("  OK [" + tid + "] " + exid + " (" + str(dur/1000) + "s)")
                 self.write_progress("running")
                 with self.lock: running_set.discard(tid)
+                self.write_progress("running")
                 return
             else:
                 cb = self.circuit_breakers.get(exid)
@@ -454,6 +466,7 @@ class Orch:
             # P3: mark root failures so downstream tasks can skip
             if is_root_task(task):
                 self.failed_root_tasks[tid] = True
+            self.write_progress("running")
             self.fail[tid] = {"taskId": tid, "success": False, "error": str(err)[:500], "durationMs": dur, "retries": retries-1}
             running_set.discard(tid)
         self.write_progress("running")

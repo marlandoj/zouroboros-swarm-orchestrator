@@ -2,7 +2,7 @@
 /**
  * Swarm Orchestrator Test Script
  *
- * Tests v4 orchestrator to verify functionality
+ * Tests v5 orchestrator to verify functionality
  */
 
 import { exec } from "child_process";
@@ -98,10 +98,17 @@ class TestRunner {
 
 const SCRIPTS_DIR = __dirname;
 
-async function test_v4_orchestrator_exists(): Promise<void> {
-  const path = join(SCRIPTS_DIR, "orchestrate-v4.ts");
+async function test_v5_orchestrator_exists(): Promise<void> {
+  const path = join(SCRIPTS_DIR, "orchestrate-v5.ts");
   if (!existsSync(path)) {
-    throw new Error("orchestrate-v4.ts not found");
+    throw new Error("orchestrate-v5.ts not found");
+  }
+}
+
+async function test_python_orchestrator_exists(): Promise<void> {
+  const path = join(SCRIPTS_DIR, "orchestrate.py");
+  if (!existsSync(path)) {
+    throw new Error("orchestrate.py not found");
   }
 }
 
@@ -119,11 +126,19 @@ async function test_benchmark_exists(): Promise<void> {
   }
 }
 
-async function test_v4_compile(): Promise<void> {
+async function test_v5_compile(): Promise<void> {
   try {
-    await execAsync(`cd ${SCRIPTS_DIR} && bun build orchestrate-v4.ts --target=bun --outfile=/tmp/test-v4.js`);
+    await execAsync(`cd ${SCRIPTS_DIR} && bun build orchestrate-v5.ts --target=bun --outfile=/tmp/test-v5.js`);
   } catch (error) {
-    throw new Error(`Failed to compile v4: ${error}`);
+    throw new Error(`Failed to compile v5: ${error}`);
+  }
+}
+
+async function test_python_syntax(): Promise<void> {
+  try {
+    await execAsync(`python3 -m py_compile ${SCRIPTS_DIR}/orchestrate.py`);
+  } catch (error) {
+    throw new Error(`Python syntax check failed: ${error}`);
   }
 }
 
@@ -175,14 +190,16 @@ async function main() {
   const runner = new TestRunner(true);
 
   // File existence tests
-  await runner.test("v4 orchestrator file exists", test_v4_orchestrator_exists);
+  await runner.test("v5 orchestrator file exists", test_v5_orchestrator_exists);
+  await runner.test("python orchestrator file exists", test_python_orchestrator_exists);
   await runner.test("token optimizer file exists", test_token_optimizer_exists);
   await runner.test("benchmark file exists", test_benchmark_exists);
 
   console.log("\n--- Compilation Tests ---\n");
 
   // Compilation tests
-  await runner.test("v4 orchestrator compiles", test_v4_compile);
+  await runner.test("v5 orchestrator compiles", test_v5_compile);
+  await runner.test("python orchestrator syntax check", test_python_syntax);
   await runner.test("benchmark compiles", test_benchmark_compile);
 
   console.log("\n--- Runtime Tests ---\n");
