@@ -17,20 +17,17 @@ A reusable skill that enables **any persona** to spawn parallel agent teams, del
 ## ⚡ Quick Start
 
 ```bash
-# v5.0 — Primary (Python orchestrator)
-python3 Skills/zo-swarm-orchestrator/scripts/orchestrate.py campaign.json
+# Short campaigns — Python (fastest, 551 clean lines)
+python3 Skills/zo-swarm-orchestrator/scripts/orchestrate.py tasks.json
 
-# bun version (v4.x TS orchestrator — available but syntax-broken)
-bun Skills/zo-swarm-orchestrator/scripts/orchestrate-v4.ts campaign.json
+# Long campaigns (>5 tasks) — hybrid runner (progress streaming + handoff)
+bun Skills/zo-swarm-orchestrator/scripts/swarm-hybrid-runner.ts tasks.json --notify sms
 
-# Hybrid runner for long campaigns (>15 min)
-bun Skills/zo-swarm-orchestrator/scripts/swarm-hybrid-runner.ts campaign.json --notify sms
-```
+# Cascade mode: use --no-cascade to skip downstream tasks when a root fails
+python3 Skills/zo-swarm-orchestrator/scripts/orchestrate.py tasks.json --no-cascade
 
-### Doctor / Health Check
-
-```bash
-# Verify all executors are available
+# Status + health checks
+python3 Skills/zo-swarm-orchestrator/scripts/orchestrate.py status <swarm-id>
 python3 Skills/zo-swarm-orchestrator/scripts/orchestrate.py doctor
 ```
 
@@ -179,13 +176,10 @@ tail -f /tmp/swarm.log
 
 | Version | Status | Key Innovation |
 |---------|--------|----------------|
-| **v5.0** | ✅ **Current** | **Python orchestrator** (`orchestrate.py`) — primary executor; `orchestrate-v4.ts` legacy until repaired |
-| **v4.10** | ⚠️ Legacy | Phase 4 intelligence — stagnation, auto-unstuck, OmniRoute health — **syntax error, needs regeneration** |
-| v4.3 | ✅ Current | Hivemind Routing — semantic synonym matching, flattened affinity matrix |
-| v4.2 | ✅ Current | Composite router, retry-with-reroute, executor history, routing strategies |
-| v4.1 | ✅ Current | DAG dependencies, NDJSON logging, inter-agent messaging |
-| v4.0 | ✅ Current | Hierarchical memory, token budgets, pre-warm caching |
-| v1–v3 | Archived | Superseded by v4 |
+| **v5.0** | ✅ **Current** | **Dual-engine**: Python (551L, primary) + TypeScript (807L, 0 errors). 6-signal routing, DAG cascade mitigation, memory context injection, wikilinks. P3 cascade-off skips downstream on root failure. |
+| v4.10 | ⚠️ Corrupted | Phase 4 intelligence — stagnation, auto-unstuck, OmniRoute health, wikilinks |
+| v4.5 | ⚠️ Corrupted | Memory-Enriched Routing — local-only execution, 6-signal composite routing |
+| v1–v4 | Archived | Superseded |
 
 ---
 
