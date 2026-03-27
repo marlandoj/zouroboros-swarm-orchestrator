@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 /**
  * Swarm Orchestrator v4.9.0 - Persona-Executor Split
  *
@@ -2504,120 +2503,6 @@ class TokenOptimizedOrchestrator {
   // PROMPT BUILDING WITH TOKEN OPTIMIZATION
   // --------------------------------------------------------------------------
 
-  private buildFormatConstraint(task: Task): string {
-    const category = task.memoryMetadata?.category || "";
-
-    if (["architecture", "design", "accessibility"].includes(category)) {
-      return `
-# OUTPUT FORMAT - YOU MUST RESPOND WITH ONLY THIS JSON
-
-\`\`\`json
-{
-  "summary": "1-2 sentence executive summary (under 50 words)",
-  "findings": [
-    {
-      "id": "F001",
-      "severity": "P0",
-      "category": "Architecture",
-      "title": "Concise finding title",
-      "description": "1-2 sentences explaining the issue",
-      "recommendation": "Specific actionable fix",
-      "evidence": "URL or CSS selector to verify"
-    }
-  ],
-  "quick_wins": ["Easy win #1", "Easy win #2"]
-}
-\`\`\`
-
-CRITICAL RULES:
-1. Respond ONLY with JSON, no markdown headers or preamble
-2. Keep summary under 100 tokens
-3. Each finding description: max 100 tokens
-4. No code blocks, HTML examples, or verbose explanations
-5. No meta-commentary about findings
-`;
-    } else if (category === "seo" || category === "performance") {
-      return `
-# OUTPUT FORMAT - YOU MUST RESPOND WITH ONLY THIS JSON
-
-\`\`\`json
-{
-  "summary": "1-2 sentence executive summary (under 50 words)",
-  "findings": [
-    {
-      "id": "F001",
-      "severity": "P0",
-      "metric": "Core Web Vitals|SEO Score|Cache Hit|Other",
-      "current_state": "What it is now",
-      "target_state": "What it should be",
-      "impact": "User impact explanation",
-      "fix": "Specific actionable fix"
-    }
-  ],
-  "quick_wins": ["Easy win #1"]
-}
-\`\`\`
-
-CRITICAL RULES:
-1. Respond ONLY with JSON
-2. Each finding: max 100 tokens total
-3. No verbose explanations
-`;
-    } else if (category === "security" || category === "compliance") {
-      return `
-# OUTPUT FORMAT - YOU MUST RESPOND WITH ONLY THIS JSON
-
-\`\`\`json
-{
-  "summary": "1-2 sentence executive summary (under 50 words)",
-  "findings": [
-    {
-      "id": "F001",
-      "severity": "P0",
-      "control": "HTTPS|Headers|Forms|Cookies|Privacy|Other",
-      "issue": "What's wrong",
-      "risk": "Business/user impact",
-      "remediation": "Specific fix"
-    }
-  ],
-  "remediation_priority": ["P0 issue #1", "P1 issue #2"]
-}
-\`\`\`
-
-CRITICAL RULES:
-1. Respond ONLY with JSON
-2. Each finding: max 80 tokens
-3. No verbose explanations
-`;
-    } else if (category === "qa") {
-      return `
-# OUTPUT FORMAT - YOU MUST RESPOND WITH ONLY THIS JSON
-
-\`\`\`json
-{
-  "summary": "Cross-validation summary (under 100 words)",
-  "qa_matrix": [
-    {
-      "category": "Architecture",
-      "status": "PASS|FAIL",
-      "evidence_count": 5,
-      "contradictions": ["Brief contradiction if any"],
-      "severity": "P0|P1|P2"
-    }
-  ],
-  "evidence_needed": ["Exact URL or selector for claim #1"]
-}
-\`\`\`
-
-CRITICAL RULES:
-1. Respond ONLY with JSON
-2. Evidence needed: list exact resources
-3. No verbose explanations
-`;
-    }
-
-    return "";
-  }
 
   private async buildOptimizedPrompt(task: Task): Promise<string> {
     const basePrompt = task.task;
@@ -2710,10 +2595,6 @@ Adjust your approach to avoid this failure mode.
     }
 
     // Add format constraint if applicable (O4)
-    const formatConstraint = this.buildFormatConstraint(task);
-    if (formatConstraint) {
-      fullPrompt += formatConstraint + "\n\n";
-    }
 
     fullPrompt += `## Your Task\n\n${basePrompt}`;
 
