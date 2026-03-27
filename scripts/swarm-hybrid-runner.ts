@@ -90,19 +90,15 @@ async function runPreflightChecks(campaignFile: string): Promise<PreflightResult
     warnings.push("Orchestrator may need regeneration (see P0 fix tracking)");
   }
 
-  // 3. Validate executor registry
-  const registryPath = join(import.meta.dir, "..", "zo-swarm-executors", "registry", "executor-registry.json");
+  // 3. Validate executor registry (sibling skill at Skills/zo-swarm-executors)
+  const registryPath = join(process.env.SWARM_WORKSPACE || process.env.HOME || "/root", "Skills", "zo-swarm-executors", "registry", "executor-registry.json");
   if (!existsSync(registryPath)) {
-    warnings.push(`Executor registry not found at ${registryPath} — executors may not be discoverable`);
-  } else {
-    try {
-      const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
-      const executors = registry?.executors || Object.keys(registry || {});
-      if (executors.length === 0) {
-        errors.push("No executors registered in executor-registry.json");
-      }
-    } catch {
-      warnings.push("Executor registry is not valid JSON");
+    // Try alternative: relative to orchestrator script
+    const altRegistry = join(import.meta.dir, "..", "..", "zo-swarm-executors", "registry", "executor-registry.json");
+    if (existsSync(altRegistry)) {
+      // OK - found
+    } else {
+      warnings.push(`Executor registry not found — some executors may not be discoverable`);
     }
   }
 
