@@ -163,15 +163,31 @@ def build_prompt(task, completed, ctx_window):
     return p
 
 def call_agent(exid, prompt, timeout_s, bridge_path):
+    # Use PIPE for stdout to avoid deadlock.
+    # The bridge outputs result to stdout AND writes a result file.
+    # We read from PIPE (non-blocking stdout read after proc finishes).
     rf = "/tmp/swarm-result-" + str(os.getpid()) + "-" + str(int(time.time()*1000)) + ".txt"
     try:
-        r = subprocess.run(["bash", str(bridge_path), prompt, rf], capture_output=True, text=True, timeout=timeout_s, cwd=WORKSPACE)
-        if r.returncode == 0:
-            try: out = Path(rf).read_text().strip(); Path(rf).unlink(missing_ok=True); return out, None
-            except: return r.stdout.strip() or "OK", None
-        return "", (r.stderr.strip() or "exit " + str(r.returncode))[:500]
-    except subprocess.TimeoutExpired: return "", "Timeout after " + str(timeout_s) + "s"
-    except Exception as e: return "", str(e)[:200]
+        proc = subprocess.Popen(
+            ["bash", str(bridge_path), prompt, rf],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, cwd=WORKSPACE)
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return "", "Timeout after " + str(timeout_s) + "s"
+        if proc.returncode == 0:
+            try:
+                out = Path(rf).read_text().strip()
+                Path(rf).unlink(missing_ok=True)
+                return out, None
+            except:
+                return stdout.strip() or "OK", None
+        return "", (stderr.strip() or "exit " + str(proc.returncode))[:500]
+    except Exception as e:
+        return "", str(e)[:200]
 
 def write_episode(swid, sok, sfail, ems, total, exids):
     try:
