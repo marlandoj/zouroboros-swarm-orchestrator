@@ -67,27 +67,35 @@ async function runPreflightChecks(campaignFile: string): Promise<PreflightResult
     errors.push(`Campaign file is not valid JSON: ${e}`);
   }
 
-  // 2. Validate orchestrator syntax (fast compile check)
-  const orchestratorScript = join(import.meta.dir, "orchestrate-v4.ts");
-  if (!existsSync(orchestratorScript)) {
-    errors.push(`Orchestrator not found: ${orchestratorScript}`);
-    return { ok: false, errors, warnings };
+  // 2a. Prefer Python orchestrator (v5.0 - fully functional)
+  const pythonScript = join(import.meta.dir, "orchestrate.py");
+  if (existsSync(pythonScript)) {
+    // Python orchestrator is primary - test it with doctor
+    const doctorResult = Bun.spawnSync({
+      cmd: ["python3", pythonScript, "doctor"],
+      timeout: 10_000,
+    });
+    if (doctorResult.exitCode !== 0) {
+      warnings.push("Python orchestrator doctor check failed — may have issues");
+    }
   }
 
-  // Use TypeScript compiler as syntax validator (fast, no types needed)
-  const tscResult = Bun.spawnSync({
-    cmd: ["bun", "run", "--bun", "tsc", "--noEmit", orchestratorScript],
-    cwd: import.meta.dir,
-    timeout: 15_000,
-  });
-  
-  if (tscResult.exitCode !== 0) {
-    const stderr = new TextDecoder().decode(tscResult.stderr);
-    // Extract line number from error
-    const match = stderr.match(/error:.*at (.*?):(\d+)/);
-    const loc = match ? `${match[1]}:${match[2]}` : "(see stderr)";
-    errors.push(`Orchestrator syntax error at ${loc}`);
-    warnings.push("Orchestrator may need regeneration (see P0 fix tracking)");
+  // 2b. Bun orchestrator (backup only — may be corrupted)
+  const orchestratorScript = join(import.meta.dir, "orchestrate-v4.ts");
+  if (existsSync(orchestratorScript)) {
+    // Syntax check for Bun TS orchestrator
+    const tscResult = Bun.spawnSync({
+      cmd: ["bun", "--bun", "tsc", "--noEmit", orchestratorScript],
+      timeout: 15_000,
+    });
+    if (tscResult.exitCode !== 0) {
+      const stderr = new TextDecoder().decode(tscResult.stderr);
+      const match = stderr.match(/error:.*at (.*?):(\d+)/);
+      const loc = match ? `${match[1]}:${match[2]}` : "(see stderr)";
+      warnings.push(`Bun orchestrator has syntax errors at ${loc} — Python orchestrator will be used instead`);
+    }
+  } else {
+    warnings.push("Bun orchestrator (orchestrate-v4.ts) not found — Python orchestrator will be used");
   }
 
   // 3. Validate executor registry (sibling skill at Skills/zo-swarm-executors)
@@ -304,11 +312,15 @@ async function runPythonOrchestrator(
   swarmId: string,
   extraArgs: string[]
 ): Promise<void> {
-  const pythonScript = join(import.meta.dir, "orchestrate-python-fallback.py");
+  const pythonScript = join(import.meta.dir, "orchestrate.py");
   if (!existsSync(pythonScript)) {
-    console.error(`\n❌ Python fallback script not found: ${pythonScript}`);
-    console.error("   Generate it with: bun Skills/zo-swarm-orchestrator/scripts/generate-python-fallback.ts");
-    process.exit(1);
+    // Fall back to legacy Python fallback
+    const alt = join(import.meta.dir, "orchestrate-python-fallback.py");
+    if (!existsSync(alt)) {
+      console.error(`\n❌ No Python orchestrator found. Tried: orchestrate.py and orchestrate-python-fallback.py`);
+      process.exit(1);
+    }
+    return runLegacyPythonFallback(campaignFile, swarmId, extraArgs);
   }
 
   console.log(`\n   ✅ Python orchestrator fallback ready`);
