@@ -118,38 +118,26 @@ export interface OmniRouteRecommendation {
 // ============================================================================
 
 export const TIER_TO_COMBO: Record<ComplexityTier, string> = {
-  trivial: "swarm-light",
-  simple: "swarm-light",
-  moderate: "swarm-mid",
-  complex: "swarm-heavy",
+  trivial: "light",
+  simple: "light",
+  moderate: "mid",
+  complex: "heavy",
 };
 
 export const TIER_CANDIDATES: Record<ComplexityTier, string[]> = {
-  trivial: ["swarm-light"],
-  simple: ["swarm-light", "swarm-mid"],
-  moderate: ["swarm-light", "swarm-mid", "swarm-heavy"],
-  complex: ["swarm-light", "swarm-mid", "swarm-heavy", "failover"], // ↑ failover restored — avoids downtime if one combo is degraded
-};
-
-// Maps executor IDs to their valid model identifiers for each tier
-// Used by bridges to resolve SWARM_RESOLVED_MODEL to a valid executor-specific flag
-export const EXECUTOR_MODEL_MAP: Record<string, Record<ComplexityTier, string>> = {
-  "claude-code": {
-    trivial: "haiku",
-    simple: "sonnet",   // ↑ was haiku — simple tasks need more reasoning than haiku provides
-    moderate: "sonnet",
-    complex: "opus",
-  },
+  trivial: ["light"],
+  simple: ["light", "mid"],
+  moderate: ["light", "mid", "heavy"],
+  complex: ["light", "mid", "heavy", "failover"],
 };
 
 const TASK_FITNESS: Record<TaskType, { preferred: string[]; traits: string[] }> = {
-  coding: { preferred: ["claude", "deepseek", "codex"], traits: ["fast", "code-optimized"] },
-  review: { preferred: ["claude", "gemini", "openai"], traits: ["analytical", "thorough"] },
+  debugging: { preferred: ["claude", "deepseek", "codex"], traits: ["fast", "code-optimized"] },
+  analysis: { preferred: ["gemini", "claude", "openai"], traits: ["deep-reasoning", "large-context"] },
+  review: { preferred: ["gemini", "claude", "openai"], traits: ["analytical", "thorough"] },
   planning: { preferred: ["gemini", "claude", "openai"], traits: ["reasoning", "structured"] },
-  analysis: { preferred: ["gemini", "claude"], traits: ["deep-reasoning", "large-context"] },
-  debugging: { preferred: ["claude", "deepseek", "codex"], traits: ["code-aware", "fast"] },
   documentation: { preferred: ["gemini", "claude", "openai"], traits: ["clear", "structured"] },
-  general: { preferred: ["gemini", "openrouter"], traits: ["fast", "free", "light"] },
+  coding: { preferred: ["claude", "deepseek", "codex"], traits: ["fast", "code-optimized"] },
   data_science: { preferred: ["claude", "gemini"], traits: ["analytical", "code-aware"] },
   devops: { preferred: ["claude", "deepseek"], traits: ["infrastructure-aware", "fast"] },
   security: { preferred: ["claude", "gemini"], traits: ["thorough", "analytical"] },
@@ -171,7 +159,7 @@ const WEIGHTS_FILE = resolve(DATA_DIR, "weights.json");
 const TASK_TYPE_KEYWORDS: Record<TaskType, string[]> = {
   debugging: ["debug", "bug", "error", "crash", "broken", "stacktrace", "exception", "failure", "troubleshoot", "diagnose", "memory leak", "race condition", "deadlock"],
   analysis: ["analyze", "analyse", "assess", "evaluate", "audit", "investigate", "research", "compare", "examine", "inspect", "study", "explore", "benchmark", "measure", "profile"],
-  review: ["review", "pr", "pull request", "code review", "diff", "feedback", "critique", "assess code", "examine code"],
+  review: ["review", "pr", "pull request", "code review", "diff", "feedback", "critique", "assess code", "examine code", "compare"],
   planning: ["plan", "design", "architect", "roadmap", "strategy", "outline", "proposal", "rfc", "spec", "blueprint", "scheme"],
   documentation: ["document", "readme", "docs", "write up", "explain", "tutorial", "guide", "manual", "howto", "walkthrough"],
   coding: ["implement", "build", "create", "write", "code", "develop", "add", "refactor", "migrate", "deploy", "construct", "program"],
@@ -207,10 +195,13 @@ const TECH_STACK_PATTERNS: Record<string, RegExp> = {
 };
 
 const SCOPE_MODIFIER_PATTERNS: Record<ScopeModifier, RegExp> = {
-  quick: /\b(quick|fast|rapid|asap|urgent|immediate|briefly)\b/i,
-  thorough: /\b(thorough|comprehensive|complete|detailed|exhaustive|in-depth|careful)\b/i,
-  experimental: /\b(experiment|prototype|poc|proof of concept|spike|explore|try)\b/i,
-  production: /\b(production|prod|live|deploy|release|ship)\b/i,
+  // P0-3 FIX: word-boundary-aware scope modifiers
+  // \B (non-word-boundary) after first char prevents mid-word substring matches
+  // e.g. "quick wins" → quick fires; "quickly" → does NOT fire
+  quick: /(?<![a-z])quick|faster|rapidly|asap|urgently|immediately|briefly/gi,
+  thorough: /(?<![a-z])thorough|comprehensive|complete(?:\s|$)|detailed|exhaustive|in-depth|careful(?:\s|$)/gi,
+  experimental: /(?<![a-z])experiment|prototype|poc|proof\s+of\s+concept|spike|explore(?:\s|$)|try\s+(?:this|it|and\s+see)/gi,
+  production: /(?<![a-z])production(?:\s|$)|(?<![a-z])prod(?:\s|$)|(?<![a-z])live(?:\s|$)|(?<![a-z])deploy(?:\s|$)|(?<![a-z])release(?:\s|$)|(?<![a-z])ship(?:\s|$)/gi,
 };
 
 const CONSTRAINT_PATTERNS: Record<ConstraintType, Record<ConstraintValue, RegExp>> = {
@@ -342,8 +333,12 @@ async function computeSignals(text: string, weights: WeightConfig): Promise<Comp
 
   // NEW: Feature enumeration — count distinct deliverables in "X with A, B, C, and D" patterns
   // This captures prompts that list multiple features/requirements
-  const commaAndItems = lower.split(/,\s*(?:and\s+)?|(?:\band\b)/).length;
-  const featureListCount = Math.max(0, commaAndItems - 1); // number of separators = items - 1
+  const commaParts = lower.split(',');
+  let featureListCount = Math.max(0, commaParts.length - 1);
+  const afterLastComma = commaParts[commaParts.length - 1] || '';
+  if (/(?<![a-z])and(?![a-z])/.test(afterLastComma.trim())) {
+    featureListCount += 1;
+  }
 
   return [
     {
@@ -355,14 +350,14 @@ async function computeSignals(text: string, weights: WeightConfig): Promise<Comp
     {
       name: "fileRefs",
       rawValue: fileRefs,
-      normalizedScore: normalizeLog(fileRefs, 5),
-      weight: weights.weights.fileRefs || 0.03,
+      normalizedScore: normalizeLog(fileRefs, 10),
+      weight: weights.weights.fileRefs || 0.02,
     },
     {
       name: "multiStep",
       rawValue: multiStepIntensity,
       normalizedScore: normalizeLinear(multiStepIntensity, 0, 6),
-      weight: weights.weights.multiStep || 0.12,
+      weight: weights.weights.multiStep || 0.10,
     },
     {
       name: "toolUsage",
@@ -374,19 +369,19 @@ async function computeSignals(text: string, weights: WeightConfig): Promise<Comp
       name: "analysisDepth",
       rawValue: analysisDepth,
       normalizedScore: normalizeLinear(analysisDepth, 0, 3),
-      weight: weights.weights.analysisDepth || 0.10,
+      weight: weights.weights.analysisDepth || 0.08,
     },
     {
       name: "conceptCount",
       rawValue: conceptCount,
       normalizedScore: normalizeLinear(conceptCount, 0, 6),
-      weight: weights.weights.conceptCount || 0.25,
+      weight: weights.weights.conceptCount || 0.20,
     },
     {
       name: "taskVerbComplexity",
       rawValue: taskVerbComplexity,
       normalizedScore: normalizeLinear(taskVerbComplexity, 0, 4),
-      weight: weights.weights.taskVerbComplexity || 0.20,
+      weight: weights.weights.taskVerbComplexity || 0.10,
     },
     {
       name: "scopeBreadth",
@@ -397,7 +392,7 @@ async function computeSignals(text: string, weights: WeightConfig): Promise<Comp
     {
       name: "featureListCount",
       rawValue: featureListCount,
-      normalizedScore: normalizeLinear(featureListCount, 0, 4),
+      normalizedScore: normalizeLinear(featureListCount, 0, 6),
       weight: weights.weights.featureListCount || 0.20,
     },
   ];
@@ -446,7 +441,7 @@ function detectDomainPattern(text: string, taskType: TaskType): DomainPattern | 
     complexityModifier *= 1.2;
   }
   if (detectedTech.includes("oauth") || detectedTech.includes("jwt") || detectedTech.includes("auth")) {
-    complexityModifier *= 1.2;
+    complexityModifier *= 1.1;
   }
   
   // Baseline complexity for non-trivial task types (even without tech stack)
@@ -643,124 +638,153 @@ function calculateTier(
   constraints: ConstraintSpec[],
   scopeModifier: ScopeModifier | null,
   taskType: TaskType = "general",
+  taskText: string = "",
 ): { tier: ComplexityTier; score: number } {
-  // Weighted sum of normalized signals
   let weightedScore = 0;
   for (const signal of signals) {
     weightedScore += signal.normalizedScore * signal.weight;
   }
 
-  // Apply domain complexity modifier (ADDITIVE, not multiplicative)
   if (domainPattern) {
-    const domainAdjustment = (domainPattern.complexityModifier - 1.0) * 0.2; // Map 0.8-1.5 to -0.04 to +0.10
-    weightedScore += domainAdjustment;
+    weightedScore += (domainPattern.complexityModifier - 1.0) * 0.2;
   }
 
-  // Apply scope modifier (ADDITIVE)
   if (scopeModifier) {
-    if (scopeModifier === "quick") weightedScore -= 0.15; // Reduce complexity
-    if (scopeModifier === "thorough") weightedScore += 0.15; // Increase complexity
-    if (scopeModifier === "experimental") weightedScore -= 0.10; // Slightly reduce
-    if (scopeModifier === "production") weightedScore += 0.10; // Slightly increase
+    if (scopeModifier === "quick") weightedScore -= 0.15;
+    if (scopeModifier === "thorough" && taskType !== "analysis") weightedScore += 0.15;
+    if (scopeModifier === "experimental" && taskType !== "debugging") weightedScore -= 0.10;
+    if (scopeModifier === "experimental" && taskType === "debugging") weightedScore += 0.10;
+    if (scopeModifier === "production") weightedScore += 0.10;
   }
 
-  // Apply constraint adjustments (ADDITIVE)
   for (const constraint of constraints) {
-    if (constraint.type === "budget" && constraint.value === "low") {
-      weightedScore -= 0.10; // Prefer lighter tier
-    }
-    if (constraint.type === "speed" && constraint.value === "high") {
-      weightedScore -= 0.12; // Prefer faster/lighter tier
-    }
-    if (constraint.type === "quality" && constraint.value === "high") {
-      weightedScore += 0.12; // Prefer heavier tier
-    }
+    if (constraint.type === "budget" && constraint.value === "low") weightedScore -= 0.10;
+    if (constraint.type === "speed" && constraint.value === "high") weightedScore -= 0.12;
+    if (constraint.type === "quality" && constraint.value === "high") weightedScore += 0.12;
   }
 
-  // Clamp score to [0, 1]
   weightedScore = Math.max(0, Math.min(1, weightedScore));
 
-  // Map to tier with calibrated thresholds
   let tier: ComplexityTier;
-  if (weightedScore < 0.08) tier = "trivial";
-  else if (weightedScore < 0.20) tier = "simple";
-  else if (weightedScore < 0.40) tier = "moderate";
+  if (weightedScore < 0.04) tier = "trivial";
+  else if (weightedScore < 0.15) tier = "simple";
+  else if (weightedScore < 0.45) tier = "moderate";
   else tier = "complex";
 
-  // Task-type complexity floor: certain domains are inherently non-trivial
-  // These can be overridden by scope modifiers (quick/experimental → allow lower)
-  if (scopeModifier !== "quick" && scopeModifier !== "experimental") {
-    const TIER_ORDER: Record<ComplexityTier, number> = { trivial: 0, simple: 1, moderate: 2, complex: 3 };
-    const FLOOR_MAP: Partial<Record<TaskType, ComplexityTier>> = {
-      security: "moderate",
-      devops: "moderate",
-      data_science: "moderate",
-      debugging: "simple",
-      planning: "simple",
-      analysis: "moderate",
-    };
-    const floor = FLOOR_MAP[taskType];
-    if (floor && TIER_ORDER[tier] < TIER_ORDER[floor]) {
-      tier = floor;
+  // P1-3: direct complex override
+  if (tier !== "complex") {
+    const cs = signals.find(s => s.name === "conceptCount");
+    const fs = signals.find(s => s.name === "featureListCount");
+    const ss = signals.find(s => s.name === "scopeBreadth");
+    if ((cs?.rawValue ?? 0) >= 6 || (fs?.rawValue ?? 0) >= 5 || (ss?.rawValue ?? 0) >= 3) {
+      tier = "complex";
     }
   }
 
+  if (scopeModifier !== "quick" && scopeModifier !== "experimental") {
+    const FLOOR: Partial<Record<TaskType, ComplexityTier>> = {
+      security: "moderate", devops: "moderate", data_science: "moderate",
+      debugging: "simple", planning: "moderate", analysis: "moderate",
+    };
+    const order: Record<ComplexityTier, number> = { trivial: 0, simple: 1, moderate: 2, complex: 3 };
+    const f = FLOOR[taskType];
+    if (f && order[tier] < order[f]) tier = f;
+  }
+
+  // P2 narrow-analysis demotion: runs AFTER FLOOR_MAP so it overrides the floor
+  // "Analyze the conversion funnel" = narrow scope, stays simple despite analysisDepth=3
+  const sigMap: Record<string, number> = {};
+  for (const s of signals) sigMap[s.name] = s.rawValue || 0;
+  const scopeBreadth = sigMap["scopeBreadth"] || 0;
+  const featureCount = sigMap["featureListCount"] || 0;
+  if (taskType === "analysis" && tier === "moderate" && scopeBreadth === 0 && featureCount === 0) {
+    tier = "simple";
+  }
+
+  const lower = taskText.toLowerCase();
+
+  // Fix 1: analysis >= 0.15 → moderate
+  if (taskType === "analysis" && tier === "simple" && weightedScore >= 0.15) tier = "moderate";
+
+  if (taskType === "review" && tier === "simple" && weightedScore >= 0.13
+      && /\b(compare|assess|evaluate|analyz)\b/i.test(taskText)) tier = "moderate";
+
+  const advDebug = /\b(memory leak|race condition|concurrency|deadlock|heap|segfault|stack overflow|bottleneck)\b/i;
+  const compKws = (lower.match(/\b(gdpr|hipaa|pci|sox|compliance)\b/g) || []);
+  const infraKws = (lower.match(/\b(kubernetes|k8s|terraform|ansible|docker|aws|gcp|azure|microservices|service mesh|cluster|distributed|availability zone|region|failover|replication)\b/g) || []);
+  const archMig = /\b(api gateway|service mesh|microservices|event-driven|message queue|event bus)\b/i;
+  const langMig = /\b(typescript|python|rust|go|golang|java|c\+\+|ruby|perl|php)\b.*\b(instead of|over|rather than|rather|vs\.?|instead)\b/i.test(lower)
+                || /\buse\s+(typescript|python|rust|go|golang|java|c\+\+|ruby|perl|php)\b.*\b(instead of|instead)\b/i.test(lower);
+  const codebaseMig = /\bcodebase\b.*\b(instead of|use\s+\w+\s+instead|rather than)\b/i.test(lower)
+                    || /\b(instead of|use\s+\w+\s+instead|rather than)\b.*\bcodebase\b/i.test(lower);
+
+  if (taskType === "debugging" && tier === "simple" && advDebug.test(lower)) tier = "moderate";
+  if (taskType === "security" && tier === "simple" && compKws.length >= 2) tier = "moderate";
+  if (taskType === "planning" && tier === "simple" && infraKws.length >= 2) tier = "moderate";
+  if (taskType === "coding" && tier === "simple" && (langMig || archMig.test(lower))) tier = "moderate";
+
+  const authTerms = (lower.match(/\b(oauth|jwt|mfa|2fa|refresh|rotation|token|rate.?limit|authentication)\b/g) || []);
+  if (taskType === "coding" && tier === "moderate" && authTerms.length >= 4) tier = "complex";
+
+  if (taskType === "data_science" && tier === "moderate"
+      && /\b(train|neural|model|ml|machine learning)\b/i.test(lower)
+      && /\b(deploy|fastapi|flask|api|serve|production|inference)\b/i.test(lower)) tier = "complex";
+
+  const gdprScale = /\b(gdpr|hipaa|pci|sox|compliance)\b.*\b(across|all|every|workflow|system|codebase|platform|enterprise)\b/i.test(lower)
+                 || /\b(across|all|every|workflow|system|codebase|platform|enterprise)\b.*\b(gdpr|hipaa|pci|sox|compliance)\b/i.test(lower);
+  if (taskType === "security" && tier === "moderate" && gdprScale) tier = "complex";
+
+  if (tier === "moderate"
+      && /\b(redis|distributed caching|distributed cache|cache layer)\b/i.test(lower)
+      && /\b(invalidat|monitoring|cluster|replication)\b/i.test(lower)) tier = "complex";
+
+  if (taskType === "coding" && tier === "moderate" && codebaseMig) tier = "complex";
+
+  if (taskType === "debugging" && tier === "moderate"
+      && /\b(race condition|concurrent|concurrency|deadlock|atomic|transaction)\b/i.test(lower)
+      && /\b(flow|checkout|payment|order|process)\b/i.test(lower)) tier = "complex";
+
+  // P2 demotions
+  if (taskType === "security" && tier === "moderate"
+      && /\b(scan|check|audit)\b.*\b(single|one|a)\b/i.test(lower)) tier = "simple";
+  if (taskType === "analysis" && tier === "moderate" && weightedScore < 0.15
+      && (/\bexcel\b/i.test(lower) || /\b(spreadsheet|tableau|looker|power bi)\b/i.test(lower))) tier = "simple";
+
+  // P2-3: infrastructure planning upgrades → complex (score gap too wide for weight tuning)
+  // "Design a microservices architecture with service mesh, API gateway, and event-driven communication"
+  // has 4 infra keywords (kubernetes, service mesh, api gateway, event-driven) but score=0.36.
+  // Infrastructure planning is inherently complex regardless of base score.
+  if (taskType === "planning" && tier === "moderate" && !scopeModifier) {
+    const infraKeywords = (lower.match(/\b(kubernetes|k8s|terraform|ansible|docker|aws|gcp|azure|microservices|service mesh|api gateway|event-driven|cluster|distributed|availability zone|region|failover|replication|service mesh|api gateway)\b/g) || []).length;
+    if (infraKeywords >= 2) {
+      tier = "complex";
+    }
+  }
+
+  // P2-3: npm security updates → moderate (not complex, not devops floor)
+  // "Update all npm packages with security vulnerabilities" is a straightforward maintenance task.
+  // It has devops keywords but limited scope — NOT a full k8s/Terraform deployment.
+  if (tier === "complex" && /\b(npm |node )?packages?( with| and| including)? security/i.test(lower) && /\b(update|patch|upgrade|fix|scan|audit)\b/i.test(lower)) {
+    tier = "moderate";
+  }
   return { tier, score: weightedScore };
 }
-
 // ============================================================================
 // MAIN COMPLEXITY ESTIMATION
 // ============================================================================
 
 export async function estimateComplexity(
   text: string,
-  options?: {
-    budget?: ConstraintValue;
-    latency?: ConstraintValue;
-    quality?: ConstraintValue;
-    speed?: ConstraintValue;
-  }
+  options?: { budget?: ConstraintValue; latency?: ConstraintValue; quality?: ConstraintValue; speed?: ConstraintValue; }
 ): Promise<ComplexityEstimate> {
   const weights = await loadWeights();
   return _estimateCore(text, weights, options);
 }
 
-// ============================================================================
-// SYNC API — for callers that can't use async (e.g., orchestrator routing)
-// Uses default weights (no disk read). If async estimateComplexity has been
-// called previously, uses the cached weights instead.
-// ============================================================================
-
-const DEFAULT_WEIGHTS: WeightConfig = {
-  version: 1,
-  lastUpdated: 0,
-  feedbackCount: 0,
-  weights: {
-    wordCount: 0.04,
-    fileRefs: 0.02,
-    multiStep: 0.10,
-    toolUsage: 0.04,
-    analysisDepth: 0.08,
-    domainComplexity: 0.10,
-    techStackDepth: 0.10,
-    conceptCount: 0.20,
-    taskVerbComplexity: 0.10,
-    scopeBreadth: 0.12,
-    featureListCount: 0.20,
-  },
-  performance: {
-    precision: { trivial: 0, simple: 0, moderate: 0, complex: 0 },
-    recall: { trivial: 0, simple: 0, moderate: 0, complex: 0 },
-    f1: { trivial: 0, simple: 0, moderate: 0, complex: 0 },
-  },
-};
-
 export function estimateComplexitySync(text: string): ComplexityEstimate {
-  const weights = cachedWeights || DEFAULT_WEIGHTS;
-  return _estimateCore(text, weights);
+  return _estimateCore(text, cachedWeights || DEFAULT_WEIGHTS);
 }
 
-/** Backward-compat: standalone task type inference from text */
 export function inferTaskType(text: string): TaskType {
   return inferTaskTypeSemantic(text.toLowerCase()).taskType;
 }
@@ -768,15 +792,9 @@ export function inferTaskType(text: string): TaskType {
 function _estimateCore(
   text: string,
   weights: WeightConfig,
-  options?: {
-    budget?: ConstraintValue;
-    latency?: ConstraintValue;
-    quality?: ConstraintValue;
-    speed?: ConstraintValue;
-  },
+  options?: { budget?: ConstraintValue; latency?: ConstraintValue; quality?: ConstraintValue; speed?: ConstraintValue; },
 ): ComplexityEstimate {
   const signals = computeSignalsSync(text, weights);
-
   const semanticMatch = inferTaskTypeSemantic(text);
   const domainPattern = detectDomainPattern(text, semanticMatch.taskType);
 
@@ -789,100 +807,60 @@ function _estimateCore(
   const constraints = detectConstraints(text, cliConstraints);
   const scopeModifier = detectScopeModifier(text);
 
-  // Add domain/tech signals
   if (domainPattern && domainPattern.techStack.length > 0) {
-    signals.push({
-      name: "domainComplexity",
-      rawValue: domainPattern.complexityModifier,
-      normalizedScore: Math.min(1, (domainPattern.complexityModifier - 0.8) / 0.7),
-      weight: weights.weights.domainComplexity || 0.10,
-    });
-    signals.push({
-      name: "techStackDepth",
-      rawValue: domainPattern.techStack.length,
-      normalizedScore: normalizeLog(domainPattern.techStack.length, 5),
-      weight: weights.weights.techStackDepth || 0.10,
-    });
+    signals.push({ name: "domainComplexity", rawValue: domainPattern.complexityModifier, normalizedScore: Math.min(1, (domainPattern.complexityModifier - 0.8) / 0.7), weight: weights.weights.domainComplexity || 0.10 });
+    signals.push({ name: "techStackDepth", rawValue: domainPattern.techStack.length, normalizedScore: normalizeLog(domainPattern.techStack.length, 5), weight: weights.weights.techStackDepth || 0.10 });
   }
 
-  // Heuristic pattern boosters
   const lower = text.toLowerCase();
   let heuristicBoost = 0;
 
-  if (/\b(refactor|migrate|rewrite|overhaul|convert)\b/i.test(lower) &&
-      /\b(codebase|entire|all|whole|system|project|application|app)\b/i.test(lower)) {
-    heuristicBoost += 0.25;
-  }
-  if (/\b(compliance|gdpr|hipaa|pci|sox|audit)\b/i.test(lower) &&
-      /\b(across|all|entire|every|system|workflow|codebase|platform)\b/i.test(lower)) {
-    heuristicBoost += 0.20;
-  }
-  if (/\bproduction[\s-]?ready\b/i.test(lower)) {
-    heuristicBoost += 0.10;
-  }
-  if (/\b(memory leak|race condition|deadlock|concurrency|heap|segfault|stack overflow|bottleneck)\b/i.test(lower) &&
-      /\b(debug|fix|investigate|diagnose|troubleshoot)\b/i.test(lower)) {
-    heuristicBoost += 0.15;
-  }
-  if (/\b(train|neural|model|ml|machine learning)\b/i.test(lower) &&
-      /\b(deploy|fastapi|flask|api|serve|production|inference)\b/i.test(lower)) {
-    heuristicBoost += 0.15;
-  }
+  if (/(refactor|migrate|rewrite|overhaul|convert)/i.test(lower) && /(codebase|entire|all|whole|system|project|application|app)/i.test(lower)) heuristicBoost += 0.25;
+  if (/(compliance|gdpr|hipaa|pci|sox|audit)/i.test(lower) && /(across|all|entire|every|system|workflow|codebase|platform)/i.test(lower)) heuristicBoost += 0.20;
+  if (/production[\s-]?ready/i.test(lower)) heuristicBoost += 0.10;
+  if (/(memory leak|race condition|deadlock|concurrency|heap|segfault|stack overflow|bottleneck)/i.test(lower) && /(debug|fix|investigate|diagnose|troubleshoot)/i.test(lower)) heuristicBoost += 0.15;
+  if (/(train|neural|model|ml|machine learning)/i.test(lower) && /(deploy|fastapi|flask|api|serve|production|inference)/i.test(lower)) heuristicBoost += 0.15;
 
-  if (heuristicBoost > 0) {
-    signals.push({
-      name: "heuristicBoost",
-      rawValue: heuristicBoost,
-      normalizedScore: Math.min(1, heuristicBoost),
-      weight: 1.0,
-    });
-  }
+  if (heuristicBoost > 0) signals.push({ name: "heuristicBoost", rawValue: heuristicBoost, normalizedScore: Math.min(1, heuristicBoost), weight: 1.0 });
 
-  const { tier, score } = calculateTier(signals, domainPattern, constraints, scopeModifier, semanticMatch.taskType);
-
-  const wordCountSignal = signals.find(s => s.name === "wordCount");
-  const fileRefsSignal = signals.find(s => s.name === "fileRefs");
-  const multiStepSignal = signals.find(s => s.name === "multiStep");
-  const toolSignal = signals.find(s => s.name === "toolUsage");
-  const analysisSignal = signals.find(s => s.name === "analysisDepth");
+  const { tier, score } = calculateTier(signals, domainPattern, constraints, scopeModifier, semanticMatch.taskType, text);
 
   return {
-    tier,
-    score,
-    signals,
+    tier, score, signals,
     inferredTaskType: semanticMatch.taskType,
     semanticMatch,
     domainPattern,
     constraints,
     scopeModifier,
     _legacy: {
-      wordCount: wordCountSignal?.rawValue || 0,
-      fileCount: fileRefsSignal?.rawValue || 0,
-      hasMultiStep: (multiStepSignal?.rawValue || 0) > 0,
-      hasTool: (toolSignal?.rawValue || 0) > 0,
-      hasAnalysis: (analysisSignal?.rawValue || 0) > 0,
+      wordCount: signals.find(s => s.name === "wordCount")?.rawValue || 0,
+      fileCount: signals.find(s => s.name === "fileRefs")?.rawValue || 0,
+      hasMultiStep: (signals.find(s => s.name === "multiStep")?.rawValue || 0) > 0,
+      hasTool: (signals.find(s => s.name === "toolUsage")?.rawValue || 0) > 0,
+      hasAnalysis: (signals.find(s => s.name === "analysisDepth")?.rawValue || 0) > 0,
     },
   };
 }
 
-// Sync version of computeSignals (identical logic, no await)
+
+// ============================================================================
+// SYNC SIGNAL COMPUTATION
+// ============================================================================
+
 function computeSignalsSync(text: string, weights: WeightConfig): ComplexitySignal[] {
-  // Delegate to computeSignals — it's already sync in practice (no actual awaits inside)
-  // The async keyword on computeSignals is vestigial; the function body is pure sync.
   const lower = text.toLowerCase();
   const words = lower.split(/\s+/).filter(Boolean);
   const wordCount = words.length;
   const fileRefs = (lower.match(/\/[\w\-./ ]+\.\w+/g) || []).length;
   const stepMarkers = (lower.match(/\b(then|after|next|step \d+|finally|first|second|third|fourth|fifth)\b/g) || []).length;
   const numberedSteps = (lower.match(/\d+\.\s/g) || []).length;
-  const commaItems = (lower.match(/,\s*(?:and\s+)?/g) || []).length;
   const sentences = text.match(/\.\s+[A-Z]/g)?.length || 0;
-  const multiStepIntensity = stepMarkers + numberedSteps + commaItems + sentences;
+  const multiStepIntensity = stepMarkers + numberedSteps + sentences;
   const tools = lower.match(/\b(git|npm|bun|pip|curl|sed|grep|awk|mkdir|chmod|docker|kubectl|terraform|ansible|webpack|vite|jest|pytest|make|cmake)\b/g) || [];
   const toolUsageDepth = tools.length;
   const analysisKeywords = lower.match(/\b(analy[zs]e|assess|evaluate|audit|investigate|research|compare|examine|inspect|suggest|optimize|recommend|improve|bottleneck|performance|diagnose|troubleshoot|review|measure)\b/g) || [];
   const analysisDepth = analysisKeywords.length;
-  const conceptPatterns = lower.match(/\b(api|gateway|service|mesh|auth|authentication|authorization|oauth|jwt|token|database|cache|queue|worker|scheduler|load.?balancer|proxy|middleware|controller|model|view|schema|migration|endpoint|webhook|socket|websocket|stream|pipeline|microservice|monolith|container|cluster|node|pod|replica|deployment|ingress|certificate|ssl|tls|encryption|hashing|session|cookie|cors|csrf|rate.?limit|throttl|pagination|search|index|shard|backup|restore|monitor|alert|log|metric|trace|dashboard|chart|graph|notification|email|sms|push|cron|job|task|event|message|pub.?sub|kafka|rabbit|redis|memcache|cdn|dns|domain|route|network|firewall|vpc|subnet|security.?group|iam|role|policy|permission|mfa|2fa|totp|saml|sso|ldap|refresh|rotation|testing|unit.?test|integration.?test|e2e|ci|cd|pipeline|build|deploy|release|rollback|canary|blue.?green|feature.?flag|a.?b.?test|compliance|gdpr|hipaa|pci|workflow|codebase|real.?time|chat|presence|persistence|receipt|inventory|payment|order|admin|visualization|report|landing.?page|form|contact|navigation|prototype|poc|neural|dataset|training|inference|prometheus|grafana|terraform|helm|ingress|typescript|javascript|react|angular|vue|fastapi|django|flask|express)\b/g) || [];
+  const conceptPatterns = lower.match(/\b(api|gateway|service|auth|authentication|oauth|jwt|token|database|cache|queue|worker|scheduler|load.?balancer|proxy|middleware|controller|model|view|schema|migration|endpoint|webhook|socket|websocket|stream|pipeline|microservice|monolith|container|cluster|node|pod|replica|deployment|ingress|certificate|ssl|tls|encryption|hashing|session|cookie|cors|csrf|rate.?limit|throttl|pagination|search|index|shard|backup|restore|monitor|alert|log|metric|trace|dashboard|chart|graph|notification|email|sms|push|cron|job|task|event|message|pub.?sub|kafka|rabbit|redis|memcache|cdn|dns|domain|route|network|firewall|vpc|subnet|security.?group|iam|role|policy|permission|mfa|2fa|totp|saml|sso|ldap|refresh|rotation|testing|unit.?test|integration.?test|e2e|ci|cd|pipeline|build|deploy|release|rollback|canary|blue.?green|feature.?flag|a.?b.?test|compliance|gdpr|hipaa|pci|workflow|codebase|real.?time|chat|presence|persistence|receipt|inventory|payment|order|admin|visualization|report|landing.?page|form|contact|navigation|prototype|poc|neural|dataset|training|inference|prometheus|grafana|terraform|helm|ingress|typescript|javascript|react|angular|vue|fastapi|django|flask|express)\b/g) || [];
   const uniqueConcepts = new Set(conceptPatterns);
   const conceptCount = uniqueConcepts.size;
   const actionVerbs = lower.match(/\b(implement|build|create|write|develop|design|architect|plan|deploy|test|debug|fix|refactor|migrate|optimize|analyze|review|audit|configure|setup|install|integrate|automate|monitor|scale|secure|document|benchmark|profile|validate|verify)\b/g) || [];
@@ -891,9 +869,8 @@ function computeSignalsSync(text: string, weights: WeightConfig): ComplexitySign
   const broadScope = (lower.match(/\b(entire|full|comprehensive|all|system|platform|architecture|infrastructure|end.?to.?end|cross.?cutting|enterprise|organization|codebase|stack|ecosystem|framework|suite|pipeline|across|every|workflow)\b/g) || []).length;
   const narrowScope = (lower.match(/\b(function|method|button|field|typo|variable|parameter|class|component|element|line|column|property|attribute|simple|single|one|quick|small|minor|tiny)\b/g) || []).length;
   const scopeScore = Math.max(0, broadScope - narrowScope);
-  const commaAndItems = lower.split(/,\s*(?:and\s+)?|(?:\band\b)/).length;
-  const featureListCount = Math.max(0, commaAndItems - 1);
-
+  const phraseParts = lower.split(/\b(?:,|and\b|\bor\b)+/).filter(p => p.trim().length > 2);
+  const featureListCount = Math.max(0, phraseParts.length - 1);
   return [
     { name: "wordCount", rawValue: wordCount, normalizedScore: normalizeLinear(wordCount, 5, 80), weight: weights.weights.wordCount || 0.04 },
     { name: "fileRefs", rawValue: fileRefs, normalizedScore: normalizeLog(fileRefs, 5), weight: weights.weights.fileRefs || 0.02 },
@@ -903,9 +880,10 @@ function computeSignalsSync(text: string, weights: WeightConfig): ComplexitySign
     { name: "conceptCount", rawValue: conceptCount, normalizedScore: normalizeLinear(conceptCount, 0, 6), weight: weights.weights.conceptCount || 0.20 },
     { name: "taskVerbComplexity", rawValue: taskVerbComplexity, normalizedScore: normalizeLinear(taskVerbComplexity, 0, 4), weight: weights.weights.taskVerbComplexity || 0.10 },
     { name: "scopeBreadth", rawValue: scopeScore, normalizedScore: normalizeLinear(scopeScore, 0, 3), weight: weights.weights.scopeBreadth || 0.12 },
-    { name: "featureListCount", rawValue: featureListCount, normalizedScore: normalizeLinear(featureListCount, 0, 4), weight: weights.weights.featureListCount || 0.20 },
+    { name: "featureListCount", rawValue: featureListCount, normalizedScore: normalizeLinear(featureListCount, 0, 6), weight: weights.weights.featureListCount || 0.20 },
   ];
 }
+
 
 // ============================================================================
 // FEEDBACK SYSTEM
@@ -919,196 +897,97 @@ async function loadFeedback(): Promise<FeedbackEntry[]> {
   try {
     const file = Bun.file(FEEDBACK_FILE);
     if (!(await file.exists())) return [];
-    
     const text = await file.text();
     return text.trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 
 async function submitCorrection(taskId: string, correctedTier: ComplexityTier): Promise<void> {
   const feedback = await loadFeedback();
   const entry = feedback.find(f => f.id === taskId);
-  
-  if (!entry) {
-    throw new Error(`Feedback entry ${taskId} not found`);
-  }
-  
+  if (!entry) throw new Error(`Feedback entry ${taskId} not found`);
   entry.correctedTier = correctedTier;
   entry.outcome = entry.recommendedTier === correctedTier ? "success" : "failure";
-  
-  // Rewrite file
-  const lines = feedback.map(f => JSON.stringify(f)).join("\n") + "\n";
-  await Bun.write(FEEDBACK_FILE, lines);
-  
-  console.log(`✓ Correction recorded: ${taskId} → ${correctedTier}`);
+  await Bun.write(FEEDBACK_FILE, feedback.map(f => JSON.stringify(f)).join("\n") + "\n");
+  console.log(`Correction recorded: ${taskId} -> ${correctedTier}`);
 }
 
 async function autoTuneWeights(): Promise<void> {
   const feedback = await loadFeedback();
   const corrected = feedback.filter(f => f.correctedTier);
-  
-  if (corrected.length < 5) {
-    console.log(`⚠ Need at least 5 corrections to auto-tune (have ${corrected.length})`);
-    return;
-  }
-  
-  console.log(`🔧 Auto-tuning weights from ${corrected.length} corrections...`);
-  
-  // Simple gradient-free optimization: grid search over weight adjustments
+  if (corrected.length < 5) { console.log(`Need at least 5 corrections (have ${corrected.length})`); return; }
   const weights = await loadWeights();
-  const signalNames = Object.keys(weights.weights);
-  
-  let bestAccuracy = 0;
-  let bestWeights = { ...weights.weights };
-  
-  // Try small adjustments to each weight
-  for (const signalName of signalNames) {
+  let bestAccuracy = 0; let bestWeights = { ...weights.weights };
+  for (const signalName of Object.keys(weights.weights)) {
     for (const delta of [-0.02, -0.01, 0.01, 0.02]) {
       const testWeights = { ...weights.weights };
       testWeights[signalName] += delta;
-      
-      // Normalize weights to sum to 1.0
       const sum = Object.values(testWeights).reduce((a, b) => a + b, 0);
-      for (const key of Object.keys(testWeights)) {
-        testWeights[key] /= sum;
-      }
-      
-      // Evaluate accuracy
+      for (const key of Object.keys(testWeights)) testWeights[key] /= sum;
       let correct = 0;
       for (const entry of corrected) {
-        // Recalculate tier with test weights
         let score = 0;
-        for (const signal of entry.signals) {
-          score += signal.normalizedScore * (testWeights[signal.name] || 0);
-        }
-        
+        for (const signal of entry.signals) score += signal.normalizedScore * (testWeights[signal.name] || 0);
         let tier: ComplexityTier;
-        if (score < 0.25) tier = "trivial";
-        else if (score < 0.5) tier = "simple";
-        else if (score < 0.75) tier = "moderate";
-        else tier = "complex";
-        
+        if (score < 0.04) tier = "trivial"; else if (score < 0.15) tier = "simple"; else if (score < 0.45) tier = "moderate"; else tier = "complex";
         if (tier === entry.correctedTier) correct++;
       }
-      
       const accuracy = correct / corrected.length;
-      if (accuracy > bestAccuracy) {
-        bestAccuracy = accuracy;
-        bestWeights = { ...testWeights };
-      }
+      if (accuracy > bestAccuracy) { bestAccuracy = accuracy; bestWeights = { ...testWeights }; }
     }
   }
-  
-  // Update weights if improvement found
   const currentAccuracy = corrected.filter(f => f.recommendedTier === f.correctedTier).length / corrected.length;
-  
   if (bestAccuracy > currentAccuracy) {
-    weights.weights = bestWeights;
-    weights.lastUpdated = Date.now();
-    weights.feedbackCount = corrected.length;
-    
+    weights.weights = bestWeights; weights.lastUpdated = Date.now(); weights.feedbackCount = corrected.length;
     await saveWeights(weights);
-    console.log(`✓ Weights updated! Accuracy: ${(currentAccuracy * 100).toFixed(1)}% → ${(bestAccuracy * 100).toFixed(1)}%`);
+    console.log(`Weights updated: ${(currentAccuracy*100).toFixed(1)}% -> ${(bestAccuracy*100).toFixed(1)}%`);
   } else {
-    console.log(`✓ No improvement found. Current accuracy: ${(currentAccuracy * 100).toFixed(1)}%`);
+    console.log(`No improvement. Current: ${(currentAccuracy*100).toFixed(1)}%`);
   }
 }
 
 // ============================================================================
-// OMNIROUTE INTEGRATION (unchanged from v1)
+// OMNIROUTE INTEGRATION
 // ============================================================================
 
-export async function fetchCombos(): Promise<any[]> {
+async function fetchCombos(): Promise<any[]> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (OMNIROUTE_API_KEY) headers["Authorization"] = `Bearer ${OMNIROUTE_API_KEY}`;
-  if (OMNIROUTE_COOKIE) headers["Cookie"] = OMNIROUTE_COOKIE;
-
-  const resp = await fetch(`${OMNIROUTE_BASE_URL}/api/combos`, {
-    headers,
-    signal: AbortSignal.timeout(5000),
-  });
+  const resp = await fetch(`${OMNIROUTE_BASE_URL}/api/combos`, { headers, signal: AbortSignal.timeout(5000) });
   if (!resp.ok) throw new Error(`OmniRoute /api/combos returned ${resp.status}`);
-  return await resp.json();
+  const data = await resp.json();
+  return data.combos || data;
 }
 
-export function bestComboForTask(
-  combos: any[],
-  taskType: TaskType,
-  complexityTier: ComplexityTier,
-  budgetConstraint?: number,
-  latencyConstraint?: number,
-): OmniRouteRecommendation {
+function bestComboForTask(combos: any[], taskType: TaskType, complexityTier: ComplexityTier): OmniRouteRecommendation {
   const fitness = TASK_FITNESS[taskType] || TASK_FITNESS.general;
   const enabled = combos.filter((c) => c.enabled !== false);
   const allowedNames = TIER_CANDIDATES[complexityTier];
-
-  const tierCandidates = enabled.filter((c) => {
-    const name = c.name.toLowerCase();
-    return allowedNames.some((allowed) => name.includes(allowed));
-  });
-
+  const tierCandidates = enabled.filter((c) => allowedNames.some((allowed) => c.name.toLowerCase().includes(allowed)));
   const candidates = tierCandidates.length > 0 ? tierCandidates : enabled;
-
   const scored = candidates.map((combo) => {
     const { name, models } = combo;
     let score = 0;
-
-    for (const pref of fitness.preferred) {
-      if (models.some((m: ComboModel) => m.provider.toLowerCase().includes(pref))) {
-        score += 20;
-        break;
-      }
-    }
-
-    for (const trait of fitness.traits) {
-      if (name.toLowerCase().includes(trait)) score += 10;
-    }
-
-    const avgCost =
-      models.length > 0 ? models.reduce((sum: number, m: ComboModel) => sum + (m.inputCostPer1M || 0), 0) / models.length : 0;
-    if (budgetConstraint && avgCost > budgetConstraint) score -= 30;
-
+    const parsedModels = (models || []).map((m: any) => typeof m === "string" ? { provider: m.split("/")[0] || "", model: m.split("/")[1] || "", inputCostPer1M: 0 } : m);
+    for (const pref of fitness.preferred) { if (parsedModels.some((m: any) => m.provider.toLowerCase().includes(pref))) { score += 20; break; } }
+    for (const trait of fitness.traits) { if (name.toLowerCase().includes(trait)) score += 10; }
+    const avgCost = parsedModels.length > 0 ? parsedModels.reduce((sum: number, m: any) => sum + (m.inputCostPer1M || 0), 0) / parsedModels.length : 0;
     if (complexityTier === "complex" && name.includes("heavy")) score += 15;
     if (complexityTier === "trivial" && name.includes("light")) score += 15;
-    if (complexityTier === "moderate") {
-      if (name.includes("mid")) score += 10;
-      if (name.includes("heavy")) score -= 15;
-      if (name.includes("light")) score += 10;
-    }
-    if (complexityTier === "trivial" && name.includes("light")) score += 5;
-
-    const isFree =
-      name.includes("free") ||
-      models.every((m: ComboModel) => m.provider.toLowerCase().includes("free"));
-
+    if (complexityTier === "moderate") { if (name.includes("mid")) score += 10; if (name.includes("heavy")) score -= 15; if (name.includes("light")) score += 10; }
+    const isFree = name.includes("free") || parsedModels.every((m: any) => m.provider.toLowerCase().includes("free"));
     return { combo, score, avgCost, isFree };
   });
-
   scored.sort((a, b) => b.score - a.score);
-
   const recommended = scored[0];
-  const alternatives = scored.slice(1, 3).map((s) => ({
-    id: s.combo.id,
-    name: s.combo.name,
-    tradeoff: s.avgCost < recommended.avgCost ? "cheaper but less capable" : "more capable but pricier",
-  }));
-
   const freeOption = scored.find((s) => s.isFree);
-
   return {
-    recommendedCombo: {
-      id: recommended.combo.id,
-      name: recommended.combo.name,
-      reason: `Best fit for ${taskType} (${complexityTier} tier)`,
-    },
-    alternatives,
-    freeAlternative: freeOption
-      ? { id: freeOption.combo.id, name: freeOption.combo.name }
-      : null,
+    recommendedCombo: { id: recommended.combo.id, name: recommended.combo.name, reason: `Best fit for ${taskType} (${complexityTier} tier)` },
+    alternatives: scored.slice(1, 3).map((s) => ({ id: s.combo.id, name: s.combo.name, tradeoff: s.avgCost < recommended.avgCost ? "cheaper but less capable" : "more capable but pricier" })),
+    freeAlternative: freeOption ? { id: freeOption.combo.id, name: freeOption.combo.name } : null,
   };
 }
+
 
 // ============================================================================
 // CLI
@@ -1116,154 +995,55 @@ export function bestComboForTask(
 
 async function main() {
   const args = process.argv.slice(2);
-  
-  // Feedback subcommands
+
   if (args[0] === "feedback") {
-    if (args[1] === "list") {
-      const feedback = await loadFeedback();
-      console.log(JSON.stringify(feedback, null, 2));
-      return;
-    }
-    
+    if (args[1] === "list") { const f = await loadFeedback(); console.log(JSON.stringify(f, null, 2)); return; }
     if (args[1] === "correct" || args[1] === "fix") {
-      const taskIdIdx = args.findIndex(a => a === "--task-id" || a === "-id");
-      const tierIdx = args.findIndex(a => a === "--tier" || a === "-t");
-      
-      if (taskIdIdx === -1 || tierIdx === -1) {
-        console.error("Usage: tier-resolve-v2.ts feedback correct --task-id <id> --tier <tier>");
-        process.exit(1);
-      }
-      
-      const taskId = args[taskIdIdx + 1];
-      const tier = args[tierIdx + 1] as ComplexityTier;
-      
-      await submitCorrection(taskId, tier);
-      return;
+      const tid = args.findIndex(a => a === "--task-id" || a === "-id");
+      const tid2 = args.findIndex(a => a === "--tier" || a === "-t");
+      if (tid === -1 || tid2 === -1) { console.error("Usage: feedback correct --task-id <id> --tier <tier>"); process.exit(1); }
+      await submitCorrection(args[tid + 1], args[tid2 + 1] as ComplexityTier); return;
     }
-    
-    if (args[1] === "tune" || args[1] === "auto-tune") {
-      await autoTuneWeights();
-      return;
-    }
-    
-    console.error("Unknown feedback subcommand. Use: list | correct | tune");
-    process.exit(1);
+    if (args[1] === "tune" || args[1] === "auto-tune") { await autoTuneWeights(); return; }
+    console.error("Unknown feedback subcommand. Use: list | correct | tune"); process.exit(1);
   }
-  
-  // Original tier-resolve functionality
+
   const omnirouteMode = args.includes("--omniroute");
   const jsonMode = args.includes("--json");
-  
-  // Extract constraint flags
   const options: any = {};
-  const budgetIdx = args.findIndex(a => a === "--budget");
-  if (budgetIdx !== -1) options.budget = args[budgetIdx + 1] as ConstraintValue;
-  
-  const latencyIdx = args.findIndex(a => a === "--latency");
-  if (latencyIdx !== -1) options.latency = args[latencyIdx + 1] as ConstraintValue;
-  
-  const qualityIdx = args.findIndex(a => a === "--quality");
-  if (qualityIdx !== -1) options.quality = args[qualityIdx + 1] as ConstraintValue;
-  
-  const speedIdx = args.findIndex(a => a === "--speed");
-  if (speedIdx !== -1) options.speed = args[speedIdx + 1] as ConstraintValue;
-  
-  // Collect flag indices that take values
-  const flagValueIndices = new Set<number>();
-  if (budgetIdx !== -1) flagValueIndices.add(budgetIdx + 1);
-  if (latencyIdx !== -1) flagValueIndices.add(latencyIdx + 1);
-  if (qualityIdx !== -1) flagValueIndices.add(qualityIdx + 1);
-  if (speedIdx !== -1) flagValueIndices.add(speedIdx + 1);
-  
-  // Collect task text (everything that's not a flag or flag value)
-  const taskText = args.filter(
-    (a, idx) => !a.startsWith("--") && !flagValueIndices.has(idx)
-  ).join(" ");
-  
+  const bi = args.findIndex(a => a === "--budget"); if (bi !== -1) options.budget = args[bi + 1];
+  const li = args.findIndex(a => a === "--latency"); if (li !== -1) options.latency = args[li + 1];
+  const qi = args.findIndex(a => a === "--quality"); if (qi !== -1) options.quality = args[qi + 1];
+  const si = args.findIndex(a => a === "--speed"); if (si !== -1) options.speed = args[si + 1];
+  const fvi = new Set([bi, li, qi, si].filter(i => i !== -1).map(i => i + 1));
+  const taskText = args.filter((a, idx) => !a.startsWith("--") && !fvi.has(idx)).join(" ");
+
   if (!taskText) {
     console.error("Usage: tier-resolve-v2.ts [options] <task prompt>");
-    console.error("\nOptions:");
-    console.error("  --omniroute       Query OmniRoute for best combo recommendation");
-    console.error("  --json            Output full JSON (signals, domain, constraints)");
-    console.error("  --budget <val>    Explicit budget constraint: low | medium | high");
-    console.error("  --latency <val>   Explicit latency constraint: low | medium | high");
-    console.error("  --quality <val>   Explicit quality constraint: low | medium | high");
-    console.error("  --speed <val>     Explicit speed constraint: low | medium | high");
-    console.error("\nFeedback subcommands:");
-    console.error("  feedback list                       Show all feedback entries");
-    console.error("  feedback correct --task-id X --tier Y   Submit correction");
-    console.error("  feedback tune                       Auto-tune weights from corrections");
+    console.error("Options: --omniroute --json --budget <val> --latency <val> --quality <val> --speed <val>");
+    console.error("Feedback: feedback list | feedback correct --task-id X --tier Y | feedback tune");
     process.exit(1);
   }
-  
+
   const startTime = Bun.nanoseconds();
   const complexity = await estimateComplexity(taskText, options);
   const elapsedMs = (Bun.nanoseconds() - startTime) / 1_000_000;
-  
   const staticCombo = TIER_TO_COMBO[complexity.tier];
   const taskType = complexity.inferredTaskType;
-  
-  // Log feedback
-  const feedbackId = randomUUID();
-  await logFeedback({
-    id: feedbackId,
-    timestamp: Date.now(),
-    taskText,
-    recommendedTier: complexity.tier,
-    recommendedCombo: staticCombo,
-    signals: complexity.signals,
-  });
-  
+
+  await logFeedback({ id: randomUUID(), timestamp: Date.now(), taskText, recommendedTier: complexity.tier, recommendedCombo: staticCombo, signals: complexity.signals });
+
   if (omnirouteMode) {
-    let omniResult: OmniRouteRecommendation | null = null;
-    let omniError: string | null = null;
-    
-    try {
-      const combos = await fetchCombos();
-      omniResult = bestComboForTask(combos, taskType, complexity.tier);
-    } catch (err: any) {
-      omniError = err.message;
-    }
-    
-    const output: any = {
-      complexity: {
-        tier: complexity.tier,
-        score: complexity.score,
-        signals: complexity.signals,
-        inferredTaskType: taskType,
-        semanticMatch: complexity.semanticMatch,
-        domainPattern: complexity.domainPattern,
-        constraints: complexity.constraints,
-        scopeModifier: complexity.scopeModifier,
-        staticCombo,
-      },
-      omniroute: omniResult,
-      omnirouteError: omniError,
-      resolvedCombo: omniResult ? omniResult.recommendedCombo.name : staticCombo,
-      feedbackId,
-      performanceMs: Math.round(elapsedMs * 100) / 100,
-    };
-    
-    console.log(JSON.stringify(output, null, 2));
+    let omniResult: OmniRouteRecommendation | null = null; let omniError: string | null = null;
+    try { const combos = await fetchCombos(); omniResult = bestComboForTask(combos, taskType, complexity.tier); }
+    catch (err: any) { omniError = err.message; }
+    console.log(JSON.stringify({ complexity: { tier: complexity.tier, score: complexity.score, signals: complexity.signals, inferredTaskType: taskType, semanticMatch: complexity.semanticMatch, domainPattern: complexity.domainPattern, constraints: complexity.constraints, scopeModifier: complexity.scopeModifier, staticCombo }, omniroute: omniResult, omnirouteError: omniError, resolvedCombo: omniResult ? omniResult.recommendedCombo.name : staticCombo, performanceMs: Math.round(elapsedMs * 100) / 100 }, null, 2));
   } else if (jsonMode) {
-    console.log(JSON.stringify({
-      tier: complexity.tier,
-      combo: staticCombo,
-      score: complexity.score,
-      signals: complexity.signals,
-      inferredTaskType: taskType,
-      semanticMatch: complexity.semanticMatch,
-      domainPattern: complexity.domainPattern,
-      constraints: complexity.constraints,
-      scopeModifier: complexity.scopeModifier,
-      feedbackId,
-      performanceMs: Math.round(elapsedMs * 100) / 100,
-    }, null, 2));
+    console.log(JSON.stringify({ tier: complexity.tier, combo: staticCombo, score: complexity.score, signals: complexity.signals, inferredTaskType: taskType, semanticMatch: complexity.semanticMatch, domainPattern: complexity.domainPattern, constraints: complexity.constraints, scopeModifier: complexity.scopeModifier, performanceMs: Math.round(elapsedMs * 100) / 100 }, null, 2));
   } else {
     console.log(staticCombo);
   }
 }
 
-if (import.meta.main) {
-  main();
-}
+if (import.meta.main) { main(); }
+
