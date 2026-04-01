@@ -2,7 +2,7 @@
 
 > Coordinate multiple AI agents in parallel on [Zo Computer](https://zo.computer). Define tasks, declare dependencies, and let the orchestrator route work to the right agent with automatic memory management, retries, and structured logging.
 >
-> Part of the [Zouroboros](https://github.com/marlandoj) ecosystem — self-improving AI development tools for Zo Computer.
+> Part of the [Zouroboros](https://github.com/marlandoj/zouroboros) ecosystem — self-improving AI development tools for Zo Computer.
 
 [![Version](https://img.shields.io/badge/version-4.9.0_Dynamic_OmniRoute_Resolution-blue?style=flat-square)](https://github.com/marlandoj/zouroboros-swarm-orchestrator)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
