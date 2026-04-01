@@ -52,6 +52,9 @@ import {
 import { SwarmMemory, getSwarmMemory, ContextAccessMode, MemoryQuery } from "./swarm-memory";
 import { HierarchicalMemory, SlidingWindowMemory, MemoryItem, MemoryStrategy } from "./token-optimizer";
 
+// v5.1: RAG enrichment — auto-inject relevant SDK patterns from Agentic RAG
+import { enrichTaskWithRAG, shouldEnrichWithRAG } from "./rag-enrichment";
+
 // ============================================================================
 // PATHS & CONFIG
 // ============================================================================
@@ -1635,7 +1638,7 @@ class SwarmOrchestrator {
     while (retries <= this.config.maxRetries) {
       // Check circuit breaker
       if (!canAttempt(cb)) {
-        console.log(`  ⏸️  [${task.id}] Circuit OPEN for ${effectiveExec}, waiting...`);
+        console.log(`  ⏏️  [${task.id}] Circuit OPEN for ${effectiveExec}, waiting...`);
         await new Promise(r => setTimeout(r, cb.cooldownMs));
         continue;
       }
@@ -1788,6 +1791,16 @@ class SwarmOrchestrator {
   private async buildOptimizedPrompt(task: Task, executorId: string, recentOutputs: string[]): Promise<string> {
     const basePrompt = task.task;
 
+    // v5.1: RAG enrichment — auto-inject relevant SDK patterns
+    let ragContext = "";
+    let ragPatterns = 0;
+    if (shouldEnrichWithRAG(basePrompt)) {
+      const { context, latencyMs, patterns } = await enrichTaskWithRAG(basePrompt, { topK: 3 });
+      ragContext = context;
+      ragPatterns = patterns;
+      this.logger.log("rag_enrichment", { taskId: task.id, patterns, latencyMs });
+    }
+
     // v4.9: Resolve agency persona
     let personaContext = "";
     if (task.agencyPersona) {
@@ -1847,6 +1860,7 @@ Consider approaching this as a "${stagnation.suggestedPersona}" would.
     if (unstuckAdvisory) fullPrompt += unstuckAdvisory;
     if (memoryContext) fullPrompt += memoryContext + "\n\n";
     if (crossTaskContext) fullPrompt += crossTaskContext + "\n\n";
+    if (ragContext) fullPrompt += ragContext + "\n\n";
 
     fullPrompt += `## Your Task\n\n${basePrompt}`;
 

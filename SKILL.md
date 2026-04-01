@@ -175,6 +175,76 @@ tail -f /tmp/swarm.log
 
 ---
 
+## RAG Integration (v4.11)
+
+The orchestrator automatically enriches task prompts with relevant SDK documentation from the Agentic RAG system. This gives agents instant access to best practices and code patterns across the entire Zouroboros ecosystem.
+
+### How It Works
+
+1. **Task Analysis**: When a task contains keywords like "agent", "API", "database", "workflow", etc., the RAG system queries the knowledge base
+2. **Semantic Search**: Uses Ollama (nomic-embed-text) for local embeddings, Qdrant for vector search — zero API costs
+3. **Context Injection**: Top 3 most relevant SDK patterns are injected into the prompt before the task description
+
+### Covered SDKs (19 Total)
+
+| Category | SDKs |
+|----------|------|
+| **AI/Agent Frameworks** | claude-sdk, langchain, openai-agents, crewai, adk, llamaindex, pydantic-ai, autogen, dspy, instructor, langgraph, semantic-kernel |
+| **Zouroboros Stack** | hono, mcp-sdk, qdrant, bun, drizzle-orm |
+| **Business** | stripe, airtable |
+
+### Example Enriched Prompt
+
+```
+## Relevant SDK Patterns from Zouroboros Knowledge Base
+
+### Pattern 1: crewai — core-concepts/crew
+**Relevance:** 68.2% | **Use Case:** Role-based agent teams for project workflows
+
+```python
+from crewai import Crew, Process
+
+crew = Crew(
+    agents=[researcher, writer],
+    tasks=[research_task, write_task],
+    process=Process.hierarchical,
+    manager_agent=manager
+)
+```
+
+### Pattern 2: openai-agents — handoffs
+**Relevance:** 64.5% | **Use Case:** Lightweight multi-agent with handoffs
+
+...
+
+## Your Task
+
+Build a multi-agent workflow for content creation...
+```
+
+### Verification
+
+Check logs for RAG enrichment activity:
+```
+📚 [task-001] RAG enriched: 3 patterns (1247ms)
+```
+
+If no patterns are found, the task proceeds normally — RAG is additive, not required.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `QDRANT_URL` | (required) | Qdrant Cloud endpoint |
+| `QDRANT_API_KEY` | (optional) | Qdrant API key |
+| `OLLAMA_URL` | `http://localhost:11434/api/embeddings` | Ollama endpoint |
+
+### Disabling RAG
+
+RAG is automatic and non-blocking. To disable, set `RAG_ENABLED=false` (future release) or simply ensure QDRANT_URL is unset.
+
+---
+
 ## Version Status
 
 | Version | Status | Key Innovation |

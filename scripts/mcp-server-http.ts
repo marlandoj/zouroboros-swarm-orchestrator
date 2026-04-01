@@ -86,7 +86,7 @@ async function toolSwarmExecute(args: {
   await Bun.write(tasksPath, JSON.stringify(tasks, null, 2));
 
   const cmd = [
-    "bun", "run", `${SWARM_SCRIPTS_DIR}/orchestrate-v4.ts`,
+    "bun", "run", `${SWARM_SCRIPTS_DIR}/orchestrate-v5.ts`,
     "--tasks", tasksPath,
     "--name", campaignId,
     "--local-concurrency", concurrency.toString(),
